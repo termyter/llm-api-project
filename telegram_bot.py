@@ -36,7 +36,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Просто напиши мне любой вопрос, и я отвечу используя нейросеть!\n\n"
         "Команды:\n"
         "/start - это сообщение\n"
-        "/help - помощь"
+        "/help - помощь\n"
+        "/clean - очистить диалог"
     )
 
 
@@ -48,6 +49,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. Я отправлю его в LLM (DeepSeek)\n"
         "3. Получу ответ и пришлю тебе\n\n"
         "Пример: 'Что такое нейронная сеть?'"
+    )
+
+
+async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /clean - визуальная очистка диалога"""
+    await update.message.reply_text(
+        "🧹 История диалога очищена!\n\n"
+        "Можем начинать новый разговор. 🍚"
     )
 
 
@@ -115,6 +124,7 @@ def main():
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("clean", clean_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)
 
