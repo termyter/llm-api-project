@@ -1,0 +1,6 @@
+# Библиотеки для работы с API
+openai>=1.0.0
+python-dotenv>=1.0.0
+
+# Опционально: для Claude API
+# anthropic>=0.7.0

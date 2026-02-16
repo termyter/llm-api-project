@@ -1,0 +1,36 @@
+# API Keys и секреты
+.env
+*.env
+.env.local
+.env.*.local
+
+# API ключи
+api_keys.txt
+secrets.txt
+config.ini
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Логи
+*.log
