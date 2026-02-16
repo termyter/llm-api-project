@@ -23,8 +23,14 @@
 
 ## Запуск
 
+### CLI версия (консоль):
 ```bash
 python3 main.py
+```
+
+### Telegram Bot:
+```bash
+python3 telegram_bot.py
 ```
 
 ## Безопасность
