@@ -21,8 +21,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация OpenAI клиента
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Инициализация OpenAI клиента (работает с DeepSeek API)
+openai_client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url="https://api.deepseek.com"
+)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -41,7 +44,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❓ Как использовать:\n\n"
         "1. Просто напиши мне любой вопрос\n"
-        "2. Я отправлю его в LLM (GPT)\n"
+        "2. Я отправлю его в LLM (DeepSeek)\n"
         "3. Получу ответ и пришлю тебе\n\n"
         "Пример: 'Что такое нейронная сеть?'"
     )
@@ -58,9 +61,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤔 Думаю...")
 
     try:
-        # Отправляем запрос в OpenAI API
+        # Отправляем запрос в DeepSeek API
         response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="deepseek-chat",
             messages=[
                 {"role": "system", "content": "Ты полезный ассистент. Отвечай кратко и по делу."},
                 {"role": "user", "content": user_message}

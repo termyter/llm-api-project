@@ -20,15 +20,18 @@ def main():
         print("📝 Создайте файл .env и добавьте: OPENAI_API_KEY=your_key")
         return
 
-    # Инициализируем клиент OpenAI
-    client = OpenAI(api_key=api_key)
+    # Инициализируем клиент (работает с DeepSeek API)
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://api.deepseek.com"
+    )
 
-    print("🚀 Отправляем запрос в LLM...")
+    print("🚀 Отправляем запрос в DeepSeek LLM...")
 
     try:
         # Отправляем запрос в API
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="deepseek-chat",
             messages=[
                 {"role": "user", "content": "Привет! Расскажи кратко, что такое нейронная сеть?"}
             ]
