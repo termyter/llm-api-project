@@ -118,7 +118,9 @@ def main():
     application.add_error_handler(error_handler)
 
     # Запускаем бота
-    print("🤖 Бот запущен! Нажмите Ctrl+C для остановки.")
+    print("🤖 Бот запущен!")
+    print("💬 Отвечу на твой вопрос за маска риса!")
+    print("Нажмите Ctrl+C для остановки.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
