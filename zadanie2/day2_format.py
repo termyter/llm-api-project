@@ -43,8 +43,7 @@ def request_low_temperature():
             {"role": "user", "content": QUESTION}
         ],
         # 👉 Низкая температура = строгий, предсказуемый ответ
-        temperature=0.1,
-        max_tokens=150
+        temperature=0.1
     )
     return response
 
@@ -58,8 +57,7 @@ def request_high_temperature():
             {"role": "user", "content": QUESTION}
         ],
         # 👉 Высокая температура = креативный, разнообразный ответ
-        temperature=1.5,
-        max_tokens=150
+        temperature=1.5
     )
     return response
 def request_with_limits():
@@ -129,7 +127,7 @@ def main():
     print("\n📌 ЗАПРОС 3: Низкая температура")
     print("⚙️  Параметры:")
     print("   • temperature    — 0.1  (точный, предсказуемый)")
-    print("   • max_tokens     — 150")
+    print("   • max_tokens     — без ограничений")
     print("\n📤 Отправили:")
     print(f"   user: {QUESTION}")
     print("\n📥 Ответили:")
@@ -143,7 +141,7 @@ def main():
     print("\n📌 ЗАПРОС 4: Высокая температура")
     print("⚙️  Параметры:")
     print("   • temperature    — 1.5  (творческий, непредсказуемый)")
-    print("   • max_tokens     — 150")
+    print("   • max_tokens     — без ограничений")
     print("\n📤 Отправили:")
     print(f"   user: {QUESTION}")
     print("\n📥 Ответили:")
