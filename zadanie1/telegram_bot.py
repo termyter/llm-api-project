@@ -264,20 +264,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         s = get_settings(user_id)
         if data == "z1":
-            result = await run_zadanie1(text, s)
+            parts = await run_zadanie1(text, s)
         elif data == "z2":
-            result = await run_zadanie2(text)
+            parts = await run_zadanie2(text)
         elif data == "z3":
-            result = await run_zadanie3(text)
+            parts = await run_zadanie3(text)
         elif data == "z4":
-            result = await run_zadanie4(text)
+            parts = await run_zadanie4(text)
         elif data == "z5":
-            result = await run_zadanie5(text)
+            parts = await run_zadanie5(text)
         else:
-            result = "Неизвестное задание"
+            parts = ["Неизвестное задание"]
 
-        for chunk in split_text(result):
-            await query.message.reply_text(chunk)
+        for part in parts:
+            for chunk in split_text(part):
+                await query.message.reply_text(chunk)
 
     except Exception as e:
         logger.error(f"Ошибка в задании {data}: {e}")
@@ -315,7 +316,7 @@ async def run_zadanie1(text, settings):
     )
     answer = resp.choices[0].message.content
     tokens = resp.usage.total_tokens
-    return (
+    return [
         f"📝 ЗАДАНИЕ 1 — Ответ с настройками\n"
         f"🤖 Модель: {MODEL_LABELS.get(model_id, model_id)}\n"
         f"🌡️ Температура: {temp}\n"
@@ -323,7 +324,7 @@ async def run_zadanie1(text, settings):
         "─" * 30 + "\n"
         f"{answer}\n\n"
         f"📊 Токенов: {tokens}"
-    )
+    ]
 
 
 # ─────────────────────────── ЗАДАНИЕ 2 ─────────────────────────────
@@ -356,7 +357,7 @@ async def run_zadanie2(text):
         f"📊 Токенов: {r2.usage.total_tokens}"
     )
 
-    return "\n\n".join(out)
+    return out
 
 
 # ─────────────────────────── ЗАДАНИЕ 3 ─────────────────────────────
@@ -399,7 +400,7 @@ async def run_zadanie3(text):
     )
     out.append(f"4️⃣ Группа экспертов:\n{r4.choices[0].message.content}")
 
-    return "\n\n".join(out)
+    return out
 
 
 # ─────────────────────────── ЗАДАНИЕ 4 ─────────────────────────────
@@ -420,7 +421,7 @@ async def run_zadanie4(text):
             f"📊 Токенов: {r.usage.total_tokens}"
         )
 
-    return "\n\n".join(out)
+    return out
 
 
 # ─────────────────────────── ЗАДАНИЕ 5 ─────────────────────────────
@@ -481,7 +482,7 @@ async def run_zadanie5(text):
         f"{analysis.choices[0].message.content}"
     )
 
-    return "\n\n".join(out)
+    return out
 
 
 # ─────────────────────────── ЗАПУСК ────────────────────────────────
