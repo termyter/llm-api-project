@@ -35,17 +35,17 @@ MODELS = [
         "desc": "DeepSeek V3 (671B MoE, хорошее качество)"
     },
     {
-        "id": "anthropic/claude-sonnet-4.6",
+        "id": "anthropic/claude-opus-4.6",
         "label": "Сильная",
-        "desc": "Claude Sonnet 4.6 (топовая модель Anthropic)"
+        "desc": "Claude Opus 4.6 (самая мощная модель Anthropic)"
     }
 ]
 
 # Стоимость за 1M токенов (в рублях), из routerai.ru/models
 PRICES_RUB = {
-    "amazon/nova-micro-v1":        {"input": 9.0,   "output": 29.0},
-    "deepseek/deepseek-chat":      {"input": 25.0,  "output": 37.0},
-    "anthropic/claude-sonnet-4.6": {"input": 299.0, "output": 1496.0},
+    "amazon/nova-micro-v1":       {"input": 9.0,   "output": 29.0},
+    "deepseek/deepseek-chat":     {"input": 25.0,  "output": 37.0},
+    "anthropic/claude-opus-4.6":  {"input": 498.0, "output": 2494.0},
 }
 
 
@@ -114,7 +114,7 @@ def main():
     print("=" * 65 + "\n")
 
     analysis = client.chat.completions.create(
-        model="anthropic/claude-sonnet-4.6",
+        model="anthropic/claude-opus-4.6",
         messages=[
             {
                 "role": "system",
@@ -145,7 +145,7 @@ def main():
     print(analysis.choices[0].message.content)
 
     analysis_tokens = analysis.usage.total_tokens if analysis.usage else 0
-    analysis_cost = (analysis_tokens * 1496.0) / 1_000_000
+    analysis_cost = (analysis_tokens * 2494.0) / 1_000_000
     print(f"\n📊 Токенов на анализ: {analysis_tokens} (≈ {analysis_cost:.4f} ₽)")
     print("=" * 65)
 
