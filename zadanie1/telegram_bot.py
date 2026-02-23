@@ -263,6 +263,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         s = get_settings(user_id)
+        send = query.message.reply_text
+
         if data == "z1":
             parts = await run_zadanie1(text, s)
         elif data == "z2":
@@ -272,13 +274,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "z4":
             parts = await run_zadanie4(text)
         elif data == "z5":
-            parts = await run_zadanie5(text)
+            parts = await run_zadanie5(text, send)
+            parts = []  # z5 отправляет сам по мере поступления
         else:
             parts = ["Неизвестное задание"]
 
         for part in parts:
             for chunk in split_text(part):
-                await query.message.reply_text(chunk)
+                await send(chunk)
 
     except Exception as e:
         logger.error(f"Ошибка в задании {data}: {e}")
@@ -286,11 +289,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def split_text(text, max_len=4000):
+    """Разбивает текст на части по границам абзацев."""
+    if len(text) <= max_len:
+        return [text]
     parts = []
     while len(text) > max_len:
-        parts.append(text[:max_len])
-        text = text[max_len:]
-    parts.append(text)
+        cut = text.rfind("\n", 0, max_len)
+        if cut == -1:
+            cut = max_len
+        parts.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    if text:
+        parts.append(text)
     return parts
 
 
@@ -426,17 +436,18 @@ async def run_zadanie4(text):
 
 # ─────────────────────────── ЗАДАНИЕ 5 ─────────────────────────────
 
-async def run_zadanie5(text):
-    out = ["🤖 ЗАДАНИЕ 5 — Сравнение моделей\n" + "─" * 30]
+async def run_zadanie5(text, send):
+    await send("🤖 ЗАДАНИЕ 5 — Сравнение моделей")
 
     models = [
-        ("amazon/nova-micro-v1",      "Слабая  (Nova Micro)"),
+        ("amazon/nova-micro-v1",      "Слабая (Nova Micro)"),
         ("deepseek/deepseek-chat",    "Средняя (DeepSeek V3)"),
         ("anthropic/claude-opus-4.6", "Сильная (Claude Opus 4.6)"),
     ]
 
     answers = []
     for model_id, label in models:
+        await send(f"⏳ Запрашиваю {label}...")
         t0 = time.time()
         r = routerai.chat.completions.create(
             model=model_id,
@@ -444,14 +455,14 @@ async def run_zadanie5(text):
         )
         elapsed = time.time() - t0
         answer = r.choices[0].message.content
-        answers.append((model_id, label, answer))
-        out.append(
-            f"🔹 {label}:\n"
-            f"{answer}\n"
-            f"⏱ {elapsed:.1f}с | 📊 {r.usage.total_tokens} токенов"
-        )
+        answers.append((label, answer))
+
+        msg = f"🔹 {label}:\n{answer}\n\n⏱ {elapsed:.1f}с | 📊 {r.usage.total_tokens} токенов"
+        for chunk in split_text(msg):
+            await send(chunk)
 
     # Финальный вывод от Claude Opus
+    await send("⏳ Claude Opus анализирует все ответы...")
     analysis = routerai.chat.completions.create(
         model="anthropic/claude-opus-4.6",
         messages=[
@@ -469,20 +480,15 @@ async def run_zadanie5(text):
                 "role": "user",
                 "content": (
                     f"Вопрос: {text}\n\n"
-                    f"--- {answers[0][1]} ---\n{answers[0][2]}\n\n"
-                    f"--- {answers[1][1]} ---\n{answers[1][2]}\n\n"
-                    f"--- {answers[2][1]} ---\n{answers[2][2]}"
+                    + "\n\n".join(f"--- {lbl} ---\n{ans}" for lbl, ans in answers)
                 )
             }
         ]
     )
-    out.append(
-        "🏆 ВЫВОД от Claude Opus:\n"
-        "─" * 30 + "\n"
-        f"{analysis.choices[0].message.content}"
-    )
-
-    return out
+    conclusion = analysis.choices[0].message.content
+    msg = f"🏆 ВЫВОД от Claude Opus:\n\n{conclusion}"
+    for chunk in split_text(msg):
+        await send(chunk)
 
 
 # ─────────────────────────── ЗАПУСК ────────────────────────────────
