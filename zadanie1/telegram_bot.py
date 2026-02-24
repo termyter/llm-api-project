@@ -5,6 +5,7 @@ Telegram бот для работы с LLM через API
 """
 
 import os
+import sys
 import time
 import logging
 from dotenv import load_dotenv
@@ -14,6 +15,9 @@ from telegram.ext import (
     CallbackQueryHandler, filters, ContextTypes
 )
 from openai import OpenAI
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from zadanie6.agent import Agent
 
 load_dotenv()
 
@@ -41,10 +45,17 @@ pending_text = {}
 # Настройки пользователей: user_settings[user_id] = {...}
 user_settings = {}
 
+# Агенты: agent_sessions[user_id] = Agent(...)
+agent_sessions = {}
+
+# Режим агента: user_id в этом множестве → все сообщения идут в агент
+agent_mode = set()
+
 DEFAULT_SETTINGS = {
     "temperature": 0.7,
     "model": "deepseek-chat",
     "format": "free",  # free | points | short
+    "api": "deepseek",  # deepseek | routerai
 }
 
 MODEL_LABELS = {
@@ -57,6 +68,11 @@ FORMAT_LABELS = {
     "free":   "Свободный",
     "points": "3 пункта",
     "short":  "Кратко (1 абзац)",
+}
+
+API_LABELS = {
+    "deepseek": "DeepSeek API (прямой)",
+    "routerai": "RouterAI",
 }
 
 FORMAT_PROMPTS = {
@@ -85,7 +101,16 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🧠 Задание 3 — Методы рассуждения", callback_data="z3")],
         [InlineKeyboardButton("🌡️ Задание 4 — Температура (0 / 0.7 / 1.2)", callback_data="z4")],
         [InlineKeyboardButton("🤖 Задание 5 — Сравнение моделей", callback_data="z5")],
+        [InlineKeyboardButton("💬 Задание 6 — Агент (чат с историей)", callback_data="z6")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
+    ])
+
+
+def agent_keyboard():
+    """Кнопка для выхода из режима агента."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Новый чат", callback_data="agent_reset")],
+        [InlineKeyboardButton("🚪 Выйти из агента", callback_data="agent_exit")],
     ])
 
 
@@ -94,6 +119,7 @@ def settings_keyboard(user_id):
     temp = s["temperature"]
     model = s["model"]
     fmt = s["format"]
+    api = s.get("api", "deepseek")
 
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("─── Температура ───", callback_data="noop")],
@@ -120,6 +146,17 @@ def settings_keyboard(user_id):
             InlineKeyboardButton(f"{'✅' if fmt == 'free' else '📄'} Свободный", callback_data="set_fmt_free"),
             InlineKeyboardButton(f"{'✅' if fmt == 'points' else '📋'} 3 пункта", callback_data="set_fmt_points"),
             InlineKeyboardButton(f"{'✅' if fmt == 'short' else '✂️'} Кратко", callback_data="set_fmt_short"),
+        ],
+        [InlineKeyboardButton("─── API источник ───", callback_data="noop")],
+        [
+            InlineKeyboardButton(
+                f"{'✅ ' if api == 'deepseek' else ''}🔑 DeepSeek API",
+                callback_data="set_api_deepseek"
+            ),
+            InlineKeyboardButton(
+                f"{'✅ ' if api == 'routerai' else ''}🌐 RouterAI",
+                callback_data="set_api_routerai"
+            ),
         ],
         [InlineKeyboardButton("◀️ Назад", callback_data="back")],
     ])
@@ -151,14 +188,28 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2 — Сравнение форматов (с ограничениями и без)\n"
         "3 — 4 метода рассуждения (прямой, CoT, мета, эксперты)\n"
         "4 — Разные температуры (0, 0.7, 1.2)\n"
-        "5 — Разные модели (слабая, средняя, сильная)\n\n"
-        "⚙️ Настройки влияют только на Задание 1."
+        "5 — Разные модели (слабая, средняя, сильная)\n"
+        "6 — Агент с памятью (полноценный чат с историей)\n\n"
+        "⚙️ Настройки влияют на Задания 1 и 6.\n"
+        "/newchat — сбросить историю агента"
     )
 
 
 async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_text.pop(update.effective_user.id, None)
     await update.message.reply_text("🧹 Диалог очищен! Можем начинать заново. 🍚")
+
+
+async def newchat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in agent_sessions:
+        agent_sessions[user_id].reset()
+        await update.message.reply_text(
+            "🗑 История агента сброшена. Начинаем новый диалог!\n\n"
+            "Напиши сообщение — и я отвечу.", reply_markup=agent_keyboard()
+        )
+    else:
+        await update.message.reply_text("Ты ещё не в режиме агента. Выбери 💬 Задание 6.")
 
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,7 +219,8 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚙️ Текущие настройки:\n"
         f"🌡️ Температура: {s['temperature']}\n"
         f"🤖 Модель: {MODEL_LABELS.get(s['model'], s['model'])}\n"
-        f"📄 Формат: {FORMAT_LABELS.get(s['format'], s['format'])}\n\n"
+        f"📄 Формат: {FORMAT_LABELS.get(s['format'], s['format'])}\n"
+        f"🔌 API: {API_LABELS.get(s.get('api', 'deepseek'))}\n\n"
         f"Выбери что изменить:",
         reply_markup=settings_keyboard(user_id)
     )
@@ -179,8 +231,30 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
-    pending_text[user_id] = user_text
 
+    # Режим агента: все сообщения идут напрямую в агент
+    if user_id in agent_mode:
+        agent = agent_sessions.get(user_id)
+        if not agent:
+            await update.message.reply_text("❌ Агент не найден. Попробуй /newchat")
+            return
+        try:
+            typing = await update.message.reply_text("⏳ Думаю...")
+            answer, tokens = agent.chat(user_text)
+            await typing.delete()
+            for chunk in split_text(answer):
+                await update.message.reply_text(chunk)
+            await update.message.reply_text(
+                f"📊 Токенов: {tokens} | 💬 Сообщений в памяти: {agent.turn_count}",
+                reply_markup=agent_keyboard()
+            )
+        except Exception as e:
+            logger.error(f"Ошибка агента: {e}")
+            await update.message.reply_text(f"❌ Ошибка агента: {e}")
+        return
+
+    # Обычный режим: сохраняем текст и показываем меню
+    pending_text[user_id] = user_text
     s = get_settings(user_id)
     await update.message.reply_text(
         f"📨 Твой запрос:\n«{user_text}»\n\n"
@@ -209,7 +283,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚙️ Текущие настройки:\n"
             f"🌡️ Температура: {s['temperature']}\n"
             f"🤖 Модель: {MODEL_LABELS.get(s['model'], s['model'])}\n"
-            f"📄 Формат: {FORMAT_LABELS.get(s['format'], s['format'])}\n\n"
+            f"📄 Формат: {FORMAT_LABELS.get(s['format'], s['format'])}\n"
+            f"🔌 API: {API_LABELS.get(s.get('api', 'deepseek'))}\n\n"
             f"Выбери что изменить:",
             reply_markup=settings_keyboard(user_id)
         )
@@ -241,15 +316,35 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             set_setting(user_id, "model", model_map[val])
         elif param == "fmt":
             set_setting(user_id, "format", val)
+        elif param == "api":
+            set_setting(user_id, "api", val)
 
         s = get_settings(user_id)
         await query.edit_message_text(
             f"⚙️ Текущие настройки:\n"
             f"🌡️ Температура: {s['temperature']}\n"
             f"🤖 Модель: {MODEL_LABELS.get(s['model'], s['model'])}\n"
-            f"📄 Формат: {FORMAT_LABELS.get(s['format'], s['format'])}\n\n"
+            f"📄 Формат: {FORMAT_LABELS.get(s['format'], s['format'])}\n"
+            f"🔌 API: {API_LABELS.get(s.get('api', 'deepseek'))}\n\n"
             f"Выбери что изменить:",
             reply_markup=settings_keyboard(user_id)
+        )
+        return
+
+    # --- Агент: сброс / выход ---
+    if data == "agent_reset":
+        if user_id in agent_sessions:
+            agent_sessions[user_id].reset()
+        await query.edit_message_text(
+            "🗑 История сброшена. Начинаем новый диалог!\n\nНапиши сообщение:",
+            reply_markup=agent_keyboard()
+        )
+        return
+
+    if data == "agent_exit":
+        agent_mode.discard(user_id)
+        await query.edit_message_text(
+            "🚪 Вышел из режима агента.\n\nНапиши вопрос — и я покажу меню заданий."
         )
         return
 
@@ -276,6 +371,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "z5":
             parts = await run_zadanie5(text, send)
             parts = []  # z5 отправляет сам по мере поступления
+        elif data == "z6":
+            await start_agent_mode(user_id, text, s, send)
+            parts = []  # z6 сам управляет сообщениями
         else:
             parts = ["Неизвестное задание"]
 
@@ -304,19 +402,69 @@ def split_text(text, max_len=4000):
     return parts
 
 
+# ─────────────────────────── ЗАДАНИЕ 6 — АГЕНТ ─────────────────────
+
+async def start_agent_mode(user_id, first_message, settings, send):
+    """Активировать режим агента и обработать первое сообщение."""
+    model_id = settings["model"]
+    api = settings.get("api", "deepseek")
+
+    # Выбираем клиент и модель (те же правила что в zadanie1)
+    if model_id == "deepseek-chat" and api == "routerai":
+        client = routerai
+        actual_model = "deepseek/deepseek-chat"
+    elif model_id == "deepseek-chat":
+        client = deepseek
+        actual_model = "deepseek-chat"
+    else:
+        client = routerai
+        actual_model = model_id
+
+    # Создаём нового агента (или сбрасываем старого)
+    agent = Agent(client=client, model_id=actual_model)
+    agent_sessions[user_id] = agent
+    agent_mode.add(user_id)
+
+    await send(
+        f"💬 ЗАДАНИЕ 6 — Режим агента активен!\n"
+        f"🤖 Модель: {MODEL_LABELS.get(model_id, model_id)}\n"
+        f"🔌 API: {API_LABELS.get(api)}\n\n"
+        f"Теперь каждое твоё сообщение идёт в агент с сохранением истории.\n"
+        f"Команды: /newchat — сбросить историю"
+    )
+
+    # Первое сообщение сразу отправляем в агент
+    answer, tokens = agent.chat(first_message)
+    for chunk in split_text(answer):
+        await send(chunk)
+    await send(
+        f"📊 Токенов: {tokens} | 💬 Сообщений в памяти: {agent.turn_count}",
+        reply_markup=agent_keyboard()
+    )
+
+
 # ─────────────────────────── ЗАДАНИЕ 1 ─────────────────────────────
 
 async def run_zadanie1(text, settings):
     model_id = settings["model"]
     temp = settings["temperature"]
     fmt = settings["format"]
+    api = settings.get("api", "deepseek")
     system_prompt = FORMAT_PROMPTS[fmt]
 
-    # Выбираем клиент в зависимости от модели
-    client = deepseek if model_id == "deepseek-chat" else routerai
+    # Выбираем клиент и реальный model_id
+    if model_id == "deepseek-chat" and api == "routerai":
+        client = routerai
+        actual_model = "deepseek/deepseek-chat"
+    elif model_id == "deepseek-chat":
+        client = deepseek
+        actual_model = "deepseek-chat"
+    else:
+        client = routerai
+        actual_model = model_id
 
     resp = client.chat.completions.create(
-        model=model_id,
+        model=actual_model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
@@ -326,9 +474,11 @@ async def run_zadanie1(text, settings):
     )
     answer = resp.choices[0].message.content
     tokens = resp.usage.total_tokens
+    api_label = API_LABELS.get(api)
     return [
         f"📝 ЗАДАНИЕ 1 — Ответ с настройками\n"
         f"🤖 Модель: {MODEL_LABELS.get(model_id, model_id)}\n"
+        f"🔌 API: {api_label}\n"
         f"🌡️ Температура: {temp}\n"
         f"📄 Формат: {FORMAT_LABELS[fmt]}\n"
         "─" * 30 + "\n"
@@ -509,6 +659,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("clean", clean_command))
     app.add_handler(CommandHandler("settings", settings_command))
+    app.add_handler(CommandHandler("newchat", newchat_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)

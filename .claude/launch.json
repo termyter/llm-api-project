@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "telegram-bot",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["zadanie1/telegram_bot.py"],
+      "port": 8080,
+      "note": "Telegram polling bot — нет веб-интерфейса, запускать через терминал: python zadanie1/telegram_bot.py"
+    }
+  ]
+}
