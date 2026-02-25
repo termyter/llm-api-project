@@ -111,6 +111,7 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🌡️ Задание 4 — Температура (0 / 0.7 / 1.2)", callback_data="z4")],
         [InlineKeyboardButton("🤖 Задание 5 — Сравнение моделей", callback_data="z5")],
         [InlineKeyboardButton("💬 Задание 6 — Агент (чат с историей)", callback_data="z6")],
+        [InlineKeyboardButton("💾 Задание 7 — Агент с памятью", callback_data="z7")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -119,6 +120,7 @@ def agent_keyboard():
     """Кнопка для выхода из режима агента."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🗑 Новый чат", callback_data="agent_reset")],
+        [InlineKeyboardButton("🔄 Сменить модель", callback_data="agent_restart_model")],
         [InlineKeyboardButton("🚪 Выйти из агента", callback_data="agent_exit")],
     ])
 
@@ -369,6 +371,37 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "agent_restart_model":
+        s = get_settings(user_id)
+        model_id = s["model"]
+        api = s.get("api", "deepseek")
+        if model_id == "deepseek-chat" and api == "routerai":
+            client = routerai
+            actual_model = "deepseek/deepseek-chat"
+        elif model_id == "deepseek-chat":
+            client = deepseek
+            actual_model = "deepseek-chat"
+        else:
+            client = routerai
+            actual_model = model_id
+        agent = Agent(
+            client=client,
+            model_id=actual_model,
+            user_id=user_id,
+            data_dir=os.path.join(os.path.dirname(__file__), "..", "data"),
+        )
+        agent_sessions[user_id] = agent
+        agent_mode.add(user_id)
+        await query.edit_message_text(
+            f"🔄 Модель обновлена!\n"
+            f"🤖 {MODEL_LABELS.get(model_id, model_id)}\n"
+            f"🔌 {API_LABELS.get(api)}\n"
+            f"💬 История: {agent.turn_count} сообщений сохранена\n\n"
+            f"Продолжай писать:",
+            reply_markup=agent_keyboard()
+        )
+        return
+
     if data == "admin_restart":
         if not is_admin(user_id):
             await query.answer("⛔ Нет доступа", show_alert=True)
@@ -403,6 +436,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "z6":
             await start_agent_mode(user_id, text, s, send)
             parts = []  # z6 сам управляет сообщениями
+        elif data == "z7":
+            await start_agent_mode(user_id, text, s, send, zadanie=7)
+            parts = []  # z7 сам управляет сообщениями
         else:
             parts = ["Неизвестное задание"]
 
@@ -433,7 +469,7 @@ def split_text(text, max_len=4000):
 
 # ─────────────────────────── ЗАДАНИЕ 6 — АГЕНТ ─────────────────────
 
-async def start_agent_mode(user_id, first_message, settings, send):
+async def start_agent_mode(user_id, first_message, settings, send, zadanie=6):
     """Активировать режим агента и обработать первое сообщение."""
     model_id = settings["model"]
     api = settings.get("api", "deepseek")
@@ -459,9 +495,10 @@ async def start_agent_mode(user_id, first_message, settings, send):
     agent_sessions[user_id] = agent
     agent_mode.add(user_id)
 
+    z_label = {6: "💬 ЗАДАНИЕ 6 — Агент (чат с историей)", 7: "💾 ЗАДАНИЕ 7 — Агент с памятью"}[zadanie]
     if agent.is_restored:
         status = (
-            f"💬 ЗАДАНИЕ 6/7 — Режим агента активен!\n"
+            f"{z_label}\n"
             f"🤖 Модель: {MODEL_LABELS.get(model_id, model_id)}\n"
             f"🔌 API: {API_LABELS.get(api)}\n\n"
             f"📂 Загружена история: {agent.turn_count} сообщений\n"
@@ -470,7 +507,7 @@ async def start_agent_mode(user_id, first_message, settings, send):
         )
     else:
         status = (
-            f"💬 ЗАДАНИЕ 6/7 — Режим агента активен!\n"
+            f"{z_label}\n"
             f"🤖 Модель: {MODEL_LABELS.get(model_id, model_id)}\n"
             f"🔌 API: {API_LABELS.get(api)}\n\n"
             f"Новый диалог. История сохраняется автоматически.\n"
