@@ -121,6 +121,7 @@ def agent_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🗑 Новый чат", callback_data="agent_reset")],
         [InlineKeyboardButton("🔄 Сменить модель", callback_data="agent_restart_model")],
+        [InlineKeyboardButton("♻️ Перезапустить агент", callback_data="agent_simulate_restart")],
         [InlineKeyboardButton("🚪 Выйти из агента", callback_data="agent_exit")],
     ])
 
@@ -368,6 +369,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         agent_mode.discard(user_id)
         await query.edit_message_text(
             "🚪 Вышел из режима агента.\n\nНапиши вопрос — и я покажу меню заданий."
+        )
+        return
+
+    if data == "agent_simulate_restart":
+        # Имитация перезапуска: удаляем агент из памяти, но JSON-история остаётся на диске
+        agent = agent_sessions.pop(user_id, None)
+        turns = agent.turn_count if agent else 0
+        agent_mode.discard(user_id)
+        await query.edit_message_text(
+            f"♻️ Агент перезапущен!\n\n"
+            f"💾 История ({turns} сообщений) сохранена на диске.\n\n"
+            f"Напиши вопрос → выбери 💾 Задание 7\n"
+            f"→ увидишь что история загрузилась автоматически!"
         )
         return
 
