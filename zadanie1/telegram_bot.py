@@ -420,18 +420,34 @@ async def start_agent_mode(user_id, first_message, settings, send):
         client = routerai
         actual_model = model_id
 
-    # Создаём нового агента (или сбрасываем старого)
-    agent = Agent(client=client, model_id=actual_model)
+    # Создаём агента с user_id — он загрузит историю из файла автоматически
+    agent = Agent(
+        client=client,
+        model_id=actual_model,
+        user_id=user_id,
+        data_dir=os.path.join(os.path.dirname(__file__), "..", "data"),
+    )
     agent_sessions[user_id] = agent
     agent_mode.add(user_id)
 
-    await send(
-        f"💬 ЗАДАНИЕ 6 — Режим агента активен!\n"
-        f"🤖 Модель: {MODEL_LABELS.get(model_id, model_id)}\n"
-        f"🔌 API: {API_LABELS.get(api)}\n\n"
-        f"Теперь каждое твоё сообщение идёт в агент с сохранением истории.\n"
-        f"Команды: /newchat — сбросить историю"
-    )
+    if agent.is_restored:
+        status = (
+            f"💬 ЗАДАНИЕ 6/7 — Режим агента активен!\n"
+            f"🤖 Модель: {MODEL_LABELS.get(model_id, model_id)}\n"
+            f"🔌 API: {API_LABELS.get(api)}\n\n"
+            f"📂 Загружена история: {agent.turn_count} сообщений\n"
+            f"Продолжаем с того места где остановились!\n\n"
+            f"/newchat — начать новый диалог"
+        )
+    else:
+        status = (
+            f"💬 ЗАДАНИЕ 6/7 — Режим агента активен!\n"
+            f"🤖 Модель: {MODEL_LABELS.get(model_id, model_id)}\n"
+            f"🔌 API: {API_LABELS.get(api)}\n\n"
+            f"Новый диалог. История сохраняется автоматически.\n"
+            f"/newchat — сбросить историю"
+        )
+    await send(status)
 
     # Первое сообщение сразу отправляем в агент
     answer, tokens = agent.chat(first_message)
