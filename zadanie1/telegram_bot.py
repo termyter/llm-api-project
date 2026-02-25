@@ -4,6 +4,7 @@ Telegram бот для работы с LLM через API
 Поддерживает режимы из всех заданий курса + настройки параметров.
 """
 
+import asyncio
 import os
 import sys
 import time
@@ -20,6 +21,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from zadanie6.agent import Agent
 
 load_dotenv()
+
+# ID владельца бота — только он может перезапускать
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+
+def is_admin(user_id: int) -> bool:
+    return ADMIN_ID != 0 and user_id == ADMIN_ID
+
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -121,7 +130,7 @@ def settings_keyboard(user_id):
     fmt = s["format"]
     api = s.get("api", "deepseek")
 
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("─── Температура ───", callback_data="noop")],
         [
             InlineKeyboardButton(f"{'✅' if temp == 0 else '0'} Точный", callback_data="set_temp_0"),
@@ -159,7 +168,10 @@ def settings_keyboard(user_id):
             ),
         ],
         [InlineKeyboardButton("◀️ Назад", callback_data="back")],
-    ])
+    ]
+    if is_admin(user_id):
+        rows.insert(-1, [InlineKeyboardButton("🔄 Перезапустить бота", callback_data="admin_restart")])
+    return InlineKeyboardMarkup(rows)
 
 
 # ─────────────────────────── КОМАНДЫ ───────────────────────────────
@@ -210,6 +222,15 @@ async def newchat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text("Ты ещё не в режиме агента. Выбери 💬 Задание 6.")
+
+
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+    await update.message.reply_text("🔄 Перезапускаюсь...")
+    await asyncio.sleep(1)
+    sys.exit(0)
 
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -347,6 +368,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🚪 Вышел из режима агента.\n\nНапиши вопрос — и я покажу меню заданий."
         )
         return
+
+    if data == "admin_restart":
+        if not is_admin(user_id):
+            await query.answer("⛔ Нет доступа", show_alert=True)
+            return
+        await query.edit_message_text("🔄 Перезапускаюсь...")
+        await asyncio.sleep(1)
+        sys.exit(0)
 
     # --- Задания ---
     text = pending_text.get(user_id)
@@ -676,6 +705,7 @@ def main():
     app.add_handler(CommandHandler("clean", clean_command))
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("newchat", newchat_command))
+    app.add_handler(CommandHandler("restart", restart_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
