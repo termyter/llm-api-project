@@ -15,7 +15,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
 )
-from openai import OpenAI
+from openai import OpenAI, BadRequestError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from zadanie6.agent import Agent
@@ -127,7 +127,7 @@ def token_agent_keyboard(show_overflow: bool = False):
     rows = [
         [InlineKeyboardButton("🗑 Сбросить чат", callback_data="t8_reset")],
         [InlineKeyboardButton("📊 Статистика сессии", callback_data="t8_stats")],
-        [InlineKeyboardButton("💥 Симулировать переполнение", callback_data="t8_overflow")],
+        [InlineKeyboardButton("🔥 Реальное переполнение API (131k токенов)", callback_data="t8_overflow")],
         [InlineKeyboardButton("🚪 Выйти из режима", callback_data="t8_exit")],
     ]
     return InlineKeyboardMarkup(rows)
@@ -479,37 +479,47 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "t8_overflow":
-        # Создаём агент с маленьким лимитом и набиваем историю длинным текстом
-        demo_agent = TokenAwareAgent(
-            deepseek,
-            model_id="deepseek-chat",
-            system_prompt="Отвечай одним коротким предложением.",
-            context_limit=800,
-            safe_limit=600,
-        )
-        filler = "Объясни кратко что такое машинное обучение и нейронные сети."
         await query.message.reply_text(
-            "💥 ДЕМО ПЕРЕПОЛНЕНИЯ\n\nЗаполняю контекст (лимит = 800 токенов)..."
+            "🔥 РЕАЛЬНОЕ переполнение контекста DeepSeek\n\n"
+            "Генерирую ~140,000 токенов текста и отправляю в API...\n"
+            "Лимит модели: 131,072 токена"
         )
-        turn = 0
-        while True:
-            turn += 1
-            try:
-                _, stat = demo_agent.chat(filler)
-                await query.message.reply_text(
-                    f"✅ Ход {turn}: вход={stat.prompt_tokens:,} | выход={stat.completion_tokens:,} токенов"
-                )
-            except ContextOverflowError as e:
-                await query.message.reply_text(
-                    f"💥 ПЕРЕПОЛНЕНИЕ на ходу {turn}!\n\n"
-                    f"{e}\n\n"
-                    f"📌 Решение — sliding window:\n"
-                    f"Удаляем старые пары из истории и продолжаем.",
-                    reply_markup=token_agent_keyboard()
-                )
-                break
-            if turn >= 8:
-                break
+        # Генерируем текст ~140k токенов (560k символов / 4 ≈ 140k токенов)
+        base = "Нейронные сети используют многослойную архитектуру для обработки данных. "
+        huge_text = base * 8000
+        est_tokens = len(huge_text) // 4
+
+        user_msg = f"Проанализируй этот текст и кратко ответь о чём он:\n\n{huge_text}"
+        try:
+            resp = deepseek.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": "Ты помощник."},
+                    {"role": "user", "content": user_msg},
+                ],
+                max_tokens=50,
+            )
+            # Неожиданно принял — показываем сколько токенов
+            usage = resp.usage
+            await query.message.reply_text(
+                f"✅ Неожиданно! DeepSeek принял запрос:\n"
+                f"prompt_tokens = {usage.prompt_tokens:,}\n"
+                f"Попробуй увеличить объём текста.",
+                reply_markup=token_agent_keyboard()
+            )
+        except BadRequestError as e:
+            body = e.body or {}
+            msg = body.get("message", str(e)) if isinstance(body, dict) else str(e)
+            await query.message.reply_text(
+                f"💥 РЕАЛЬНАЯ ОШИБКА DEEPSEEK API!\n\n"
+                f"HTTP 400 BadRequestError:\n"
+                f"{msg}\n\n"
+                f"📊 Мы отправили: ~{est_tokens:,} токенов\n"
+                f"🚫 Лимит модели: 131,072 токена\n\n"
+                f"✅ Наш pre-flight check (ContextOverflowError)\n"
+                f"останавливает нас ДО вызова API и экономит деньги!",
+                reply_markup=token_agent_keyboard()
+            )
         return
 
     if data == "t8_stats":

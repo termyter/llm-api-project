@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat /Users/ivanemelanov/Xcode/llm-api-project/zadanie5/*.py)",
+      "Bash(head -80 /Users/ivanemelanov/Xcode/llm-api-project/zadanie4/*.py)",
+      "Bash(source venv/bin/activate)",
+      "Bash(python -c \":*)",
+      "Bash(git add zadanie1/telegram_bot.py)",
+      "Bash(git commit:*)"
+    ]
+  }
+}
