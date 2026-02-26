@@ -19,6 +19,7 @@ from openai import OpenAI
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from zadanie6.agent import Agent
+from zadanie8.day8_tokens import TokenAwareAgent, ContextOverflowError
 
 load_dotenv()
 
@@ -59,6 +60,10 @@ agent_sessions = {}
 
 # Режим агента: user_id в этом множестве → все сообщения идут в агент
 agent_mode = set()
+
+# Задание 8: агенты с подсчётом токенов
+token_sessions: dict[int, TokenAwareAgent] = {}
+token_mode: set[int] = set()
 
 DEFAULT_SETTINGS = {
     "temperature": 0.7,
@@ -112,8 +117,20 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🤖 Задание 5 — Сравнение моделей", callback_data="z5")],
         [InlineKeyboardButton("💬 Задание 6 — Агент (чат с историей)", callback_data="z6")],
         [InlineKeyboardButton("💾 Задание 7 — Агент с памятью", callback_data="z7")],
+        [InlineKeyboardButton("🔢 Задание 8 — Токены (счётчик в реальном времени)", callback_data="z8")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
+
+
+def token_agent_keyboard(show_overflow: bool = False):
+    """Кнопки для режима агента с подсчётом токенов (задание 8)."""
+    rows = [
+        [InlineKeyboardButton("🗑 Сбросить чат", callback_data="t8_reset")],
+        [InlineKeyboardButton("📊 Статистика сессии", callback_data="t8_stats")],
+        [InlineKeyboardButton("💥 Симулировать переполнение", callback_data="t8_overflow")],
+        [InlineKeyboardButton("🚪 Выйти из режима", callback_data="t8_exit")],
+    ]
+    return InlineKeyboardMarkup(rows)
 
 
 def agent_keyboard():
@@ -255,6 +272,33 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
+
+    # Задание 8: режим агента с подсчётом токенов
+    if user_id in token_mode:
+        agent = token_sessions.get(user_id)
+        if not agent:
+            await update.message.reply_text("❌ Сессия не найдена. Выбери 🔢 Задание 8 заново.")
+            return
+        try:
+            typing = await update.message.reply_text("⏳ Думаю...")
+            answer, stat = agent.chat(user_text)
+            await typing.delete()
+            for chunk in split_text(answer):
+                await update.message.reply_text(chunk)
+            await update.message.reply_text(
+                format_token_stat(stat, agent),
+                reply_markup=token_agent_keyboard()
+            )
+        except ContextOverflowError as e:
+            await update.message.reply_text(
+                f"💥 ПЕРЕПОЛНЕНИЕ КОНТЕКСТА!\n\n{e}\n\n"
+                f"Нажми 🗑 Сбросить чат чтобы начать заново.",
+                reply_markup=token_agent_keyboard()
+            )
+        except Exception as e:
+            logger.error(f"Ошибка token-агента: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        return
 
     # Режим агента: все сообщения идут напрямую в агент
     if user_id in agent_mode:
@@ -416,6 +460,86 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # --- Задание 8: управление token-агентом ---
+    if data == "t8_reset":
+        agent = token_sessions.get(user_id)
+        if agent:
+            agent.reset()
+        await query.edit_message_text(
+            "🗑 Чат сброшен. Токены обнулены.\n\nНапиши сообщение:",
+            reply_markup=token_agent_keyboard()
+        )
+        return
+
+    if data == "t8_exit":
+        token_mode.discard(user_id)
+        await query.edit_message_text(
+            "🚪 Вышел из режима токенов.\n\nНапиши вопрос — и я покажу меню заданий."
+        )
+        return
+
+    if data == "t8_overflow":
+        # Создаём агент с маленьким лимитом и набиваем историю длинным текстом
+        demo_agent = TokenAwareAgent(
+            deepseek,
+            model_id="deepseek-chat",
+            system_prompt="Отвечай одним коротким предложением.",
+            context_limit=800,
+            safe_limit=600,
+        )
+        filler = "Объясни кратко что такое машинное обучение и нейронные сети."
+        await query.message.reply_text(
+            "💥 ДЕМО ПЕРЕПОЛНЕНИЯ\n\nЗаполняю контекст (лимит = 800 токенов)..."
+        )
+        turn = 0
+        while True:
+            turn += 1
+            try:
+                _, stat = demo_agent.chat(filler)
+                await query.message.reply_text(
+                    f"✅ Ход {turn}: вход={stat.prompt_tokens:,} | выход={stat.completion_tokens:,} токенов"
+                )
+            except ContextOverflowError as e:
+                await query.message.reply_text(
+                    f"💥 ПЕРЕПОЛНЕНИЕ на ходу {turn}!\n\n"
+                    f"{e}\n\n"
+                    f"📌 Решение — sliding window:\n"
+                    f"Удаляем старые пары из истории и продолжаем.",
+                    reply_markup=token_agent_keyboard()
+                )
+                break
+            if turn >= 8:
+                break
+        return
+
+    if data == "t8_stats":
+        agent = token_sessions.get(user_id)
+        if not agent or not agent.stats:
+            await query.answer("Нет данных — напиши хотя бы одно сообщение!", show_alert=True)
+            return
+        lines = [
+            "📊 СТАТИСТИКА СЕССИИ — ЗАДАНИЕ 8\n" + "─" * 32,
+            f"{'Ход':>3}  {'Вход':>8}  {'Выход':>7}  {'₽/ход':>8}",
+            "─" * 32,
+        ]
+        for s in agent.stats:
+            lines.append(
+                f"{s.turn:>3}  {s.prompt_tokens:>8,}  "
+                f"{s.completion_tokens:>7,}  {s.turn_cost_rub:>8.5f}"
+            )
+        last = agent.stats[-1]
+        lines += [
+            "─" * 32,
+            f"Итого токенов : {last.session_total:,}",
+            f"Итого стоимость: {last.session_cost_rub:.5f} ₽",
+            f"Ходов: {len(agent.stats)}",
+        ]
+        await query.message.reply_text(
+            "\n".join(lines),
+            reply_markup=token_agent_keyboard()
+        )
+        return
+
     if data == "admin_restart":
         if not is_admin(user_id):
             await query.answer("⛔ Нет доступа", show_alert=True)
@@ -453,6 +577,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "z7":
             await start_agent_mode(user_id, text, s, send, zadanie=7)
             parts = []  # z7 сам управляет сообщениями
+        elif data == "z8":
+            await start_token_agent_mode(user_id, text, send)
+            parts = []  # z8 сам управляет сообщениями
         else:
             parts = ["Неизвестное задание"]
 
@@ -537,6 +664,60 @@ async def start_agent_mode(user_id, first_message, settings, send, zadanie=6):
         f"📊 Токенов: {tokens} | 💬 Сообщений в памяти: {agent.turn_count}",
         reply_markup=agent_keyboard()
     )
+
+
+# ─────────────────────────── ЗАДАНИЕ 8 — TOKEN AGENT ───────────────
+
+def format_token_stat(stat, agent: TokenAwareAgent) -> str:
+    """Форматирует статистику токенов для отправки в Telegram."""
+    ctx_pct = stat.prompt_tokens / agent.context_limit * 100
+    bar_filled = min(16, int(16 * stat.prompt_tokens / agent.context_limit))
+    bar = "█" * bar_filled + "░" * (16 - bar_filled)
+
+    return (
+        f"📊 ТОКЕНЫ — ХОД {stat.turn}\n"
+        f"{'─' * 30}\n"
+        f"Вход  (prompt)  : {stat.prompt_tokens:>8,} токенов\n"
+        f"Выход (ответ)   : {stat.completion_tokens:>8,} токенов\n"
+        f"Итого за ход    : {stat.total_tokens:>8,}\n"
+        f"{'─' * 30}\n"
+        f"Нарастающий     : {stat.session_total:>8,} токенов\n"
+        f"Стоимость хода  : {stat.turn_cost_rub:>10.5f} ₽\n"
+        f"Стоимость сессии: {stat.session_cost_rub:>10.5f} ₽\n"
+        f"{'─' * 30}\n"
+        f"Контекст: [{bar}] {ctx_pct:.1f}%"
+    )
+
+
+async def start_token_agent_mode(user_id: int, first_message: str, send) -> None:
+    """Запустить токен-агент (задание 8) и обработать первое сообщение."""
+    agent = TokenAwareAgent(
+        deepseek,
+        model_id="deepseek-chat",
+        system_prompt="Ты полезный ассистент. Отвечай по делу.",
+    )
+    token_sessions[user_id] = agent
+    token_mode.add(user_id)
+
+    await send(
+        "🔢 ЗАДАНИЕ 8 — Агент с подсчётом токенов\n\n"
+        "После каждого ответа показываю:\n"
+        "• prompt_tokens — вход (история + запрос)\n"
+        "• completion_tokens — ответ модели\n"
+        "• нарастающий итог и стоимость\n"
+        "• заполнение контекста (64 000 токенов)\n\n"
+        "Пиши — и токены будут считаться в реальном времени!\n"
+        "💥 Кнопка «Симулировать переполнение» — показывает что ломается."
+    )
+
+    try:
+        answer, stat = agent.chat(first_message)
+        for chunk in split_text(answer):
+            await send(chunk)
+        await send(format_token_stat(stat, agent), reply_markup=token_agent_keyboard())
+    except Exception as e:
+        logger.error(f"Ошибка token-агента (первое сообщение): {e}")
+        await send(f"❌ Ошибка: {e}")
 
 
 # ─────────────────────────── ЗАДАНИЕ 1 ─────────────────────────────
