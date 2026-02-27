@@ -20,6 +20,7 @@ from openai import OpenAI, BadRequestError
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from zadanie6.agent import Agent
 from zadanie8.day8_tokens import TokenAwareAgent, ContextOverflowError
+from zadanie9.day9_compression import SummaryAgent
 
 load_dotenv()
 
@@ -64,6 +65,10 @@ agent_mode = set()
 # Задание 8: агенты с подсчётом токенов
 token_sessions: dict[int, TokenAwareAgent] = {}
 token_mode: set[int] = set()
+
+# Задание 9: агенты со сжатием
+summary_sessions: dict[int, SummaryAgent] = {}
+summary_mode: set[int] = set()
 
 DEFAULT_SETTINGS = {
     "temperature": 0.7,
@@ -118,7 +123,18 @@ def zadanie_keyboard():
         [InlineKeyboardButton("💬 Задание 6 — Агент (чат с историей)", callback_data="z6")],
         [InlineKeyboardButton("💾 Задание 7 — Агент с памятью", callback_data="z7")],
         [InlineKeyboardButton("🔢 Задание 8 — Токены (счётчик в реальном времени)", callback_data="z8")],
+        [InlineKeyboardButton("🗜 Задание 9 — Сжатие истории (summary)", callback_data="z9")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
+    ])
+
+
+def summary_agent_keyboard():
+    """Кнопки для режима агента со сжатием (задание 9)."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Сбросить чат", callback_data="t9_reset")],
+        [InlineKeyboardButton("📊 Статистика сессии", callback_data="t9_stats")],
+        [InlineKeyboardButton("📝 Показать summary", callback_data="t9_summary")],
+        [InlineKeyboardButton("🚪 Выйти из режима", callback_data="t9_exit")],
     ])
 
 
@@ -272,6 +288,44 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
+
+    # Задание 9: режим агента со сжатием истории
+    if user_id in summary_mode:
+        agent = summary_sessions.get(user_id)
+        if not agent:
+            await update.message.reply_text("❌ Сессия не найдена. Выбери 🗜 Задание 9 заново.")
+            return
+        try:
+            typing = await update.message.reply_text("⏳ Думаю...")
+            answer, stat = agent.chat(user_text)
+            await typing.delete()
+            for chunk in split_text(answer):
+                await update.message.reply_text(chunk)
+
+            compress_note = ""
+            if stat.compressed:
+                compress_note = (
+                    f"\n🗜 Сжатие! Потрачено {stat.summary_tokens:,} токенов на summary.\n"
+                    f"📝 История сжата до {agent.keep_recent} последних сообщений."
+                )
+
+            stat_text = (
+                f"📊 Ход {stat.turn}{compress_note}\n"
+                f"{'─' * 28}\n"
+                f"Вход (контекст)  : {stat.prompt_tokens:>7,} т\n"
+                f"Выход (ответ)    : {stat.completion_tokens:>7,} т\n"
+                f"На сжатие        : {stat.summary_tokens:>7,} т\n"
+                f"Итого за ход     : {stat.total_tokens:>7,} т\n"
+                f"{'─' * 28}\n"
+                f"В рабочей памяти : {agent.context_size:>3} сообщ.\n"
+                f"Summary есть     : {'да ✅' if agent.summary else 'нет —'}\n"
+                f"Стоимость хода   : {stat.cost_rub:.5f} ₽"
+            )
+            await update.message.reply_text(stat_text, reply_markup=summary_agent_keyboard())
+        except Exception as e:
+            logger.error(f"Ошибка summary-агента: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        return
 
     # Задание 8: режим агента с подсчётом токенов
     if user_id in token_mode:
@@ -479,10 +533,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "t8_overflow":
+        await query.answer()  # сразу отвечаем Telegram чтобы не было timeout
         await query.message.reply_text(
             "🔥 РЕАЛЬНОЕ переполнение контекста DeepSeek\n\n"
             "Генерирую ~140,000 токенов текста и отправляю в API...\n"
-            "Лимит модели: 131,072 токена"
+            "Лимит модели: 131,072 токена\n\n"
+            "⏳ Бот будет лагать пока грузится запрос — это нормально!"
         )
         # Генерируем текст ~140k токенов (560k символов / 4 ≈ 140k токенов)
         base = "Нейронные сети используют многослойную архитектуру для обработки данных. "
@@ -490,8 +546,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         est_tokens = len(huge_text) // 4
 
         user_msg = f"Проанализируй этот текст и кратко ответь о чём он:\n\n{huge_text}"
-        try:
-            resp = deepseek.chat.completions.create(
+
+        import asyncio
+
+        def _call_api():
+            return deepseek.chat.completions.create(
                 model="deepseek-chat",
                 messages=[
                     {"role": "system", "content": "Ты помощник."},
@@ -499,6 +558,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
                 max_tokens=50,
             )
+
+        try:
+            resp = await asyncio.to_thread(_call_api)
             # Неожиданно принял — показываем сколько токенов
             usage = resp.usage
             await query.message.reply_text(
@@ -520,6 +582,65 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"останавливает нас ДО вызова API и экономит деньги!",
                 reply_markup=token_agent_keyboard()
             )
+        return
+
+    # ── Задание 9: кнопки управления ─────────────────────────────────────────
+    if data == "t9_reset":
+        agent = summary_sessions.get(user_id)
+        if agent:
+            agent.reset()
+        await query.edit_message_text(
+            "🗑 Чат сброшен. Summary очищен.\n\nНапиши сообщение:",
+            reply_markup=summary_agent_keyboard()
+        )
+        return
+
+    if data == "t9_exit":
+        summary_mode.discard(user_id)
+        await query.edit_message_text(
+            "🚪 Вышел из режима сжатия.\n\nНапиши вопрос — покажу меню заданий."
+        )
+        return
+
+    if data == "t9_summary":
+        agent = summary_sessions.get(user_id)
+        if not agent:
+            await query.answer("Сессия не найдена!", show_alert=True)
+            return
+        if not agent.summary:
+            await query.answer("Summary пока пустое — история ещё не сжималась.", show_alert=True)
+            return
+        await query.message.reply_text(
+            f"📝 ТЕКУЩЕЕ SUMMARY\n{'─' * 32}\n{agent.summary}",
+            reply_markup=summary_agent_keyboard()
+        )
+        return
+
+    if data == "t9_stats":
+        agent = summary_sessions.get(user_id)
+        if not agent or not agent.stats:
+            await query.answer("Нет данных — напиши хотя бы одно сообщение!", show_alert=True)
+            return
+        lines = [
+            "📊 СТАТИСТИКА СЕССИИ — ЗАДАНИЕ 9\n" + "─" * 36,
+            f"{'Ход':>3}  {'Вход':>7}  {'Сжатие':>7}  {'Итого':>7}  {'₽':>7}",
+            "─" * 36,
+        ]
+        for s in agent.stats:
+            compress = "🗜" if s.compressed else "  "
+            lines.append(
+                f"{s.turn:>3}{compress} {s.prompt_tokens:>7,}  "
+                f"{s.summary_tokens:>7,}  {s.total_tokens:>7,}  {s.cost_rub:>7.5f}"
+            )
+        total_in = sum(s.prompt_tokens + s.summary_tokens for s in agent.stats)
+        total_cost = sum(s.cost_rub for s in agent.stats)
+        lines += [
+            "─" * 36,
+            f"Итого токенов : {total_in:,}",
+            f"Итого стоимость: {total_cost:.5f} ₽",
+            f"Сжатий: {sum(1 for s in agent.stats if s.compressed)}",
+        ]
+        await query.message.reply_text("\n".join(lines), reply_markup=summary_agent_keyboard())
         return
 
     if data == "t8_stats":
@@ -590,6 +711,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "z8":
             await start_token_agent_mode(user_id, text, send)
             parts = []  # z8 сам управляет сообщениями
+        elif data == "z9":
+            await start_summary_agent_mode(user_id, text, send)
+            parts = []  # z9 сам управляет сообщениями
         else:
             parts = ["Неизвестное задание"]
 
@@ -727,6 +851,50 @@ async def start_token_agent_mode(user_id: int, first_message: str, send) -> None
         await send(format_token_stat(stat, agent), reply_markup=token_agent_keyboard())
     except Exception as e:
         logger.error(f"Ошибка token-агента (первое сообщение): {e}")
+        await send(f"❌ Ошибка: {e}")
+
+
+# ─────────────────────────── ЗАДАНИЕ 9 — SUMMARY AGENT ─────────────
+
+async def start_summary_agent_mode(user_id: int, first_message: str, send) -> None:
+    """Запустить агент со сжатием истории (задание 9) и обработать первое сообщение."""
+    agent = SummaryAgent(
+        deepseek,
+        model_id="deepseek-chat",
+        system_prompt="Ты полезный ассистент. Отвечай по делу.",
+        keep_recent=6,
+        compress_after=6,
+    )
+    summary_sessions[user_id] = agent
+    summary_mode.add(user_id)
+
+    await send(
+        "🗜 ЗАДАНИЕ 9 — Агент со сжатием истории\n\n"
+        "Как работает:\n"
+        "• Последние 6 сообщений хранятся как есть\n"
+        "• Когда накапливается ещё 6+ — старые сжимаются в summary\n"
+        "• Summary подставляется в запрос вместо старой истории\n"
+        "• Токены экономятся при длинных диалогах!\n\n"
+        "🗜 — значок появляется когда произошло сжатие\n"
+        "📊 Статистика — сравни токены до/после сжатия\n"
+        "📝 Показать summary — текущий сжатый контекст"
+    )
+
+    try:
+        answer, stat = agent.chat(first_message)
+        for chunk in split_text(answer):
+            await send(chunk)
+
+        stat_text = (
+            f"📊 Ход {stat.turn}\n"
+            f"{'─' * 28}\n"
+            f"Вход (контекст)  : {stat.prompt_tokens:>7,} т\n"
+            f"Итого за ход     : {stat.total_tokens:>7,} т\n"
+            f"Summary есть     : {'да ✅' if agent.summary else 'нет —'}"
+        )
+        await send(stat_text, reply_markup=summary_agent_keyboard())
+    except Exception as e:
+        logger.error(f"Ошибка summary-агента (первое сообщение): {e}")
         await send(f"❌ Ошибка: {e}")
 
 
