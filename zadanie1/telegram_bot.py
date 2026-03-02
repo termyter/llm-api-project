@@ -21,6 +21,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from zadanie6.agent import Agent
 from zadanie8.day8_tokens import TokenAwareAgent, ContextOverflowError
 from zadanie9.day9_compression import SummaryAgent
+from zadanie10.day10_strategies import (
+    SlidingWindowAgent, StickyFactsAgent, BranchingAgent,
+    DEMO_SHORT, BRANCH_DEMO_BASE, BRANCH_DEMO_FORK_A, BRANCH_DEMO_FORK_B,
+    SYSTEM_PROMPT as Z10_SYSTEM_PROMPT,
+    BRANCH_A, BRANCH_B, BRANCH_MAIN,
+)
 
 load_dotenv()
 
@@ -69,6 +75,11 @@ token_mode: set[int] = set()
 # Задание 9: агенты со сжатием
 summary_sessions: dict[int, SummaryAgent] = {}
 summary_mode: set[int] = set()
+
+# Задание 10: агенты со стратегиями управления контекстом
+# z10_sessions[user_id] = {"strategy": str, "agent": agent_obj}
+z10_sessions: dict[int, dict] = {}
+z10_mode: set[int] = set()
 
 DEFAULT_SETTINGS = {
     "temperature": 0.7,
@@ -124,6 +135,7 @@ def zadanie_keyboard():
         [InlineKeyboardButton("💾 Задание 7 — Агент с памятью", callback_data="z7")],
         [InlineKeyboardButton("🔢 Задание 8 — Токены (счётчик в реальном времени)", callback_data="z8")],
         [InlineKeyboardButton("🗜 Задание 9 — Сжатие истории (summary)", callback_data="z9")],
+        [InlineKeyboardButton("🌿 Задание 10 — Стратегии контекста", callback_data="z10")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -136,6 +148,38 @@ def summary_agent_keyboard():
         [InlineKeyboardButton("📝 Показать summary", callback_data="t9_summary")],
         [InlineKeyboardButton("🚪 Выйти из режима", callback_data="t9_exit")],
     ])
+
+
+def z10_menu_keyboard():
+    """Меню выбора стратегии для задания 10."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🪟 Скользящее окно", callback_data="z10_sw")],
+        [InlineKeyboardButton("📌 Закреплённые факты", callback_data="z10_facts")],
+        [InlineKeyboardButton("🌿 Ветвление", callback_data="z10_branch")],
+        [InlineKeyboardButton("🎬 Авто-демо всех стратегий", callback_data="z10_demo")],
+    ])
+
+
+def z10_chat_keyboard(strategy: str, has_branch: bool = False) -> InlineKeyboardMarkup:
+    """Кнопки управления во время чата с заданием 10."""
+    rows = [
+        [InlineKeyboardButton("🗑 Сбросить", callback_data="t10_reset"),
+         InlineKeyboardButton("📊 Статистика", callback_data="t10_stats")],
+        [InlineKeyboardButton("🔀 Сменить стратегию", callback_data="t10_change")],
+    ]
+    if strategy == "sticky_facts":
+        rows.insert(1, [InlineKeyboardButton("📌 Показать факты", callback_data="t10_show_facts")])
+    if strategy == "branching":
+        rows.insert(1, [
+            InlineKeyboardButton("📍 Создать checkpoint", callback_data="t10_checkpoint"),
+        ])
+        if has_branch:
+            rows.insert(2, [
+                InlineKeyboardButton(f"🌿 {BRANCH_A}", callback_data="t10_fork_a"),
+                InlineKeyboardButton(f"🌱 {BRANCH_B}", callback_data="t10_fork_b"),
+            ])
+    rows.append([InlineKeyboardButton("🚪 Выйти", callback_data="t10_exit")])
+    return InlineKeyboardMarkup(rows)
 
 
 def token_agent_keyboard(show_overflow: bool = False):
@@ -288,6 +332,29 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
+
+    # Задание 10: режим агента со стратегиями контекста
+    if user_id in z10_mode:
+        session = z10_sessions.get(user_id)
+        if not session:
+            await update.message.reply_text("❌ Сессия не найдена. Выбери 🌿 Задание 10 заново.")
+            return
+        agent = session["agent"]
+        strategy = session["strategy"]
+        try:
+            typing = await update.message.reply_text("⏳ Думаю...")
+            reply, stat = await asyncio.to_thread(agent.chat, user_text)
+            await typing.delete()
+            await update.message.reply_text(f"👤 Пользователь:\n{user_text}")
+            for chunk in split_text(reply):
+                await update.message.reply_text(f"🤖 Агент:\n{chunk}")
+            has_branch = strategy == "branching" and agent.checkpoint is not None
+            stat_text = _z10_stat_text(stat, agent)
+            await update.message.reply_text(stat_text, reply_markup=z10_chat_keyboard(strategy, has_branch))
+        except Exception as e:
+            logger.error(f"Ошибка z10-агента: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        return
 
     # Задание 9: режим агента со сжатием истории
     if user_id in summary_mode:
@@ -679,6 +746,123 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(1)
         sys.exit(0)
 
+    # ── Задание 10: управление ────────────────────────────────────────────────
+    if data == "z10":
+        await query.edit_message_text(
+            "🌿 ЗАДАНИЕ 10 — Стратегии управления контекстом\n\n"
+            "Три подхода к хранению истории диалога:\n\n"
+            "🪟 Скользящее окно — помним только последние N сообщений\n"
+            "📌 Закреплённые факты — LLM извлекает факты + скользящее окно\n"
+            "🌿 Ветвление — checkpoint + независимые ветки диалога\n\n"
+            "🎬 Авто-демо — одно и то же ТЗ через все 3 стратегии",
+            reply_markup=z10_menu_keyboard()
+        )
+        return
+
+    if data == "z10_demo":
+        await query.edit_message_text("🎬 Запускаю авто-демо всех стратегий...\n\nЭто займёт ~30 секунд.")
+        await run_z10_auto_demo(user_id, query.message.reply_text)
+        return
+
+    if data in ("z10_sw", "z10_facts", "z10_branch"):
+        strategy_map = {"z10_sw": "sliding_window", "z10_facts": "sticky_facts", "z10_branch": "branching"}
+        strategy = strategy_map[data]
+        await query.edit_message_text(f"⏳ Запускаю стратегию...")
+        await start_z10_strategy(user_id, strategy, query.message.reply_text)
+        return
+
+    if data == "t10_exit":
+        z10_mode.discard(user_id)
+        await query.edit_message_text("🚪 Вышел из режима стратегий.\n\nНапиши вопрос — покажу меню заданий.")
+        return
+
+    if data == "t10_reset":
+        session = z10_sessions.get(user_id)
+        if session:
+            session["agent"].reset()
+        strategy = session["strategy"] if session else "sliding_window"
+        await query.edit_message_text(
+            "🗑 Чат сброшен.\n\nНапиши сообщение:",
+            reply_markup=z10_chat_keyboard(strategy)
+        )
+        return
+
+    if data == "t10_change":
+        z10_mode.discard(user_id)
+        await query.edit_message_text(
+            "🔀 Выбери новую стратегию:",
+            reply_markup=z10_menu_keyboard()
+        )
+        return
+
+    if data == "t10_stats":
+        session = z10_sessions.get(user_id)
+        if not session or not session["agent"].stats:
+            await query.answer("Нет данных — напиши хотя бы одно сообщение!", show_alert=True)
+            return
+        agent = session["agent"]
+        strategy = session["strategy"]
+        lines = [
+            f"📊 СТАТИСТИКА — {'СКОЛ. ОКНО' if strategy == 'sliding_window' else 'ФАКТЫ' if strategy == 'sticky_facts' else 'ВЕТВЛЕНИЕ'}\n" + "─" * 36,
+            f"{'Ход':>3}  {'Вход':>7}  {'Доп':>5}  {'Выход':>7}  {'₽':>8}",
+            "─" * 36,
+        ]
+        for s in agent.stats:
+            lines.append(
+                f"{s.turn:>3}  {s.prompt_tokens:>7,}  {s.extra_tokens:>5,}  "
+                f"{s.completion_tokens:>7,}  {s.cost_rub:>8.5f}"
+            )
+        total_cost = sum(s.cost_rub for s in agent.stats)
+        total_tok = sum(s.total_tokens for s in agent.stats)
+        lines += ["─" * 36, f"Итого токенов : {total_tok:,}", f"Итого стоимость: {total_cost:.5f} ₽"]
+        has_branch = strategy == "branching" and agent.checkpoint is not None
+        await query.message.reply_text("\n".join(lines), reply_markup=z10_chat_keyboard(strategy, has_branch))
+        return
+
+    if data == "t10_show_facts":
+        session = z10_sessions.get(user_id)
+        if not session or session["strategy"] != "sticky_facts":
+            await query.answer("Не в режиме закреплённых фактов!", show_alert=True)
+            return
+        agent = session["agent"]
+        await query.message.reply_text(
+            f"📌 ЗАКРЕПЛЁННЫЕ ФАКТЫ\n{'─' * 30}\n{agent.get_facts_text()}",
+            reply_markup=z10_chat_keyboard("sticky_facts")
+        )
+        return
+
+    if data == "t10_checkpoint":
+        session = z10_sessions.get(user_id)
+        if not session or session["strategy"] != "branching":
+            await query.answer("Не в режиме ветвления!", show_alert=True)
+            return
+        agent = session["agent"]
+        agent.create_checkpoint()
+        hist_len = len(agent.checkpoint)
+        await query.message.reply_text(
+            f"📍 Checkpoint создан!\n"
+            f"Сохранено {hist_len} сообщений.\n\n"
+            f"Теперь можешь форкнуть в ветку А или Б:",
+            reply_markup=z10_chat_keyboard("branching", has_branch=True)
+        )
+        return
+
+    if data in ("t10_fork_a", "t10_fork_b"):
+        session = z10_sessions.get(user_id)
+        if not session or session["strategy"] != "branching":
+            await query.answer("Не в режиме ветвления!", show_alert=True)
+            return
+        agent = session["agent"]
+        branch_name = BRANCH_A if data == "t10_fork_a" else BRANCH_B
+        emoji = "🌿" if data == "t10_fork_a" else "🌱"
+        agent.fork(branch_name, from_checkpoint=True)
+        await query.message.reply_text(
+            f"{emoji} Форкнул в «{branch_name}»\n"
+            f"Ветка создана из checkpoint. Пиши сообщение в этой ветке:",
+            reply_markup=z10_chat_keyboard("branching", has_branch=True)
+        )
+        return
+
     # --- Задания ---
     text = pending_text.get(user_id)
     if not text:
@@ -714,6 +898,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "z9":
             await start_summary_agent_mode(user_id, text, send)
             parts = []  # z9 сам управляет сообщениями
+        elif data == "z10":
+            # z10 через pending_text — запускаем меню
+            await query.edit_message_text(
+                "🌿 ЗАДАНИЕ 10 — Стратегии управления контекстом\n\n"
+                "Три подхода к хранению истории диалога:\n\n"
+                "🪟 Скользящее окно — помним только последние N сообщений\n"
+                "📌 Закреплённые факты — LLM извлекает факты + скользящее окно\n"
+                "🌿 Ветвление — checkpoint + независимые ветки диалога\n\n"
+                "🎬 Авто-демо — одно и то же ТЗ через все 3 стратегии",
+                reply_markup=z10_menu_keyboard()
+            )
+            parts = []
         else:
             parts = ["Неизвестное задание"]
 
@@ -852,6 +1048,177 @@ async def start_token_agent_mode(user_id: int, first_message: str, send) -> None
     except Exception as e:
         logger.error(f"Ошибка token-агента (первое сообщение): {e}")
         await send(f"❌ Ошибка: {e}")
+
+
+# ─────────────────────────── ЗАДАНИЕ 10 — СТРАТЕГИИ КОНТЕКСТА ───────
+
+def _z10_stat_text(stat, agent) -> str:
+    """Форматировать статистику одного хода для задания 10."""
+    strategy_labels = {
+        "sliding_window": "🪟 Скользящее окно",
+        "sticky_facts":   "📌 Закреплённые факты",
+    }
+    strategy_raw = stat.strategy
+    # branching[ветка-а] → extract just "branching"
+    if strategy_raw.startswith("branching"):
+        label = f"🌿 Ветвление [{agent.active_branch}]"
+    else:
+        label = strategy_labels.get(strategy_raw, strategy_raw)
+
+    lines = [
+        f"📊 Ход {stat.turn} · {label}",
+        "─" * 30,
+        f"Вход         : {stat.prompt_tokens:>7,} т",
+        f"Выход        : {stat.completion_tokens:>7,} т",
+    ]
+    if stat.extra_tokens:
+        lines.append(f"Факты (доп.) : {stat.extra_tokens:>7,} т")
+    lines.append(f"Итого        : {stat.total_tokens:>7,} т")
+    lines.append(f"Стоимость    : {stat.cost_rub:.4f} ₽")
+    lines.append(f"Контекст     : {agent.context_size()} сообщ.")
+    return "\n".join(lines)
+
+
+async def start_z10_strategy(user_id: int, strategy: str, send) -> None:
+    """Создать агента нужной стратегии и переключить пользователя в режим z10."""
+    if strategy == "sliding_window":
+        agent = SlidingWindowAgent(deepseek, "deepseek-chat", Z10_SYSTEM_PROMPT, window_size=8)
+        intro = (
+            "🪟 СКОЛЬЗЯЩЕЕ ОКНО\n\n"
+            "Как работает:\n"
+            "• В контексте всегда только последние 8 сообщений\n"
+            "• Старые сообщения автоматически отбрасываются\n"
+            "• Просто и дёшево — но факты из начала могут «забыться»\n\n"
+            "Напиши первое сообщение:"
+        )
+    elif strategy == "sticky_facts":
+        agent = StickyFactsAgent(deepseek, "deepseek-chat", Z10_SYSTEM_PROMPT, window_size=6)
+        intro = (
+            "📌 ЗАКРЕПЛЁННЫЕ ФАКТЫ\n\n"
+            "Как работает:\n"
+            "• После каждого хода LLM извлекает ключевые факты (JSON)\n"
+            "• Факты всегда присутствуют в system-промпте\n"
+            "• + последние 6 сообщений в контексте\n"
+            "• Важное не теряется даже в длинных диалогах\n\n"
+            "Напиши первое сообщение:"
+        )
+    else:  # branching
+        agent = BranchingAgent(deepseek, "deepseek-chat", Z10_SYSTEM_PROMPT)
+        intro = (
+            "🌿 ВЕТВЛЕНИЕ\n\n"
+            "Как работает:\n"
+            "• Создаёшь checkpoint — снимок текущей истории\n"
+            "• Форкаешь: ветка А и ветка Б развиваются независимо\n"
+            "• Переключаешься между ветками, сравниваешь ответы\n\n"
+            "Напиши первое сообщение (или создай checkpoint сразу):"
+        )
+
+    z10_sessions[user_id] = {"strategy": strategy, "agent": agent}
+    z10_mode.add(user_id)
+    await send(intro)
+
+
+async def run_z10_auto_demo(user_id: int, send) -> None:
+    """Прогнать три стратегии на одном сценарии и показать результаты."""
+    await send(
+        "🎬 АВТО-ДЕМО — 3 стратегии управления контекстом\n\n"
+        "Один и тот же диалог пройдём через:\n"
+        "1️⃣ Скользящее окно\n"
+        "2️⃣ Закреплённые факты\n"
+        "3️⃣ Ветвление (с форком после 2 сообщений)\n\n"
+        "⏳ Запускаю..."
+    )
+
+    # ── 1. Sliding Window ────────────────────────────────────────────
+    await send("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🪟 СТРАТЕГИЯ 1 — Скользящее окно\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    sw = SlidingWindowAgent(deepseek, "deepseek-chat", Z10_SYSTEM_PROMPT, window_size=8)
+    sw_total = 0
+    for msg in DEMO_SHORT:
+        await send(f"👤 Пользователь:\n{msg}")
+        try:
+            reply, stat = await asyncio.to_thread(sw.chat, msg)
+            sw_total += stat.total_tokens
+            for chunk in split_text(reply):
+                await send(f"🤖 Агент:\n{chunk}")
+            await send(_z10_stat_text(stat, sw))
+        except Exception as e:
+            await send(f"❌ Ошибка: {e}")
+            break
+
+    # ── 2. Sticky Facts ──────────────────────────────────────────────
+    await send("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 СТРАТЕГИЯ 2 — Закреплённые факты\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    sf = StickyFactsAgent(deepseek, "deepseek-chat", Z10_SYSTEM_PROMPT, window_size=6)
+    sf_total = 0
+    for msg in DEMO_SHORT:
+        await send(f"👤 Пользователь:\n{msg}")
+        try:
+            reply, stat = await asyncio.to_thread(sf.chat, msg)
+            sf_total += stat.total_tokens
+            for chunk in split_text(reply):
+                await send(f"🤖 Агент:\n{chunk}")
+            await send(_z10_stat_text(stat, sf))
+        except Exception as e:
+            await send(f"❌ Ошибка: {e}")
+            break
+    await send(f"📌 Извлечённые факты:\n{sf.get_facts_text()}")
+
+    # ── 3. Branching ─────────────────────────────────────────────────
+    await send("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🌿 СТРАТЕГИЯ 3 — Ветвление\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    br = BranchingAgent(deepseek, "deepseek-chat", Z10_SYSTEM_PROMPT)
+    br_total = 0
+    # Общая база (2 сообщения)
+    await send("📋 Общая база (main):")
+    for msg in BRANCH_DEMO_BASE:
+        await send(f"👤 Пользователь:\n{msg}")
+        try:
+            reply, stat = await asyncio.to_thread(br.chat, msg)
+            br_total += stat.total_tokens
+            for chunk in split_text(reply):
+                await send(f"🤖 Агент:\n{chunk}")
+        except Exception as e:
+            await send(f"❌ Ошибка: {e}")
+            break
+
+    # Checkpoint + форки
+    br.create_checkpoint()
+    await send("📍 Checkpoint создан. Форкаю в две ветки...")
+
+    # Ветка А — бюджет срезан
+    br.fork(BRANCH_A, from_checkpoint=True)
+    await send(f"🌿 {BRANCH_A} — бюджет срезан:")
+    await send(f"👤 Пользователь:\n{BRANCH_DEMO_FORK_A}")
+    try:
+        reply_a, stat_a = await asyncio.to_thread(br.chat, BRANCH_DEMO_FORK_A)
+        br_total += stat_a.total_tokens
+        for chunk in split_text(reply_a):
+            await send(f"🤖 Агент [{BRANCH_A}]:\n{chunk}")
+    except Exception as e:
+        await send(f"❌ Ошибка: {e}")
+
+    # Ветка Б — бюджет увеличен
+    br.fork(BRANCH_B, from_checkpoint=True)
+    await send(f"🌱 {BRANCH_B} — бюджет увеличен:")
+    await send(f"👤 Пользователь:\n{BRANCH_DEMO_FORK_B}")
+    try:
+        reply_b, stat_b = await asyncio.to_thread(br.chat, BRANCH_DEMO_FORK_B)
+        br_total += stat_b.total_tokens
+        for chunk in split_text(reply_b):
+            await send(f"🤖 Агент [{BRANCH_B}]:\n{chunk}")
+    except Exception as e:
+        await send(f"❌ Ошибка: {e}")
+
+    # ── Итоговая сводка ──────────────────────────────────────────────
+    await send(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 ИТОГ АВТО-ДЕМО\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪟 Скользящее окно   : {sw_total:,} токенов\n"
+        f"📌 Закреплённые факты: {sf_total:,} токенов\n"
+        f"🌿 Ветвление          : {br_total:,} токенов\n\n"
+        "Выбери стратегию и попробуй сам:"
+        ,
+        reply_markup=z10_menu_keyboard()
+    )
 
 
 # ─────────────────────────── ЗАДАНИЕ 9 — SUMMARY AGENT ─────────────
