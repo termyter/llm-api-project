@@ -27,6 +27,10 @@ from zadanie10.day10_strategies import (
     SYSTEM_PROMPT as Z10_SYSTEM_PROMPT,
     BRANCH_A, BRANCH_B, BRANCH_MAIN,
 )
+from zadanie11.day11_memory import (
+    MemoryAgent,
+    DEMO_INTRO, DEMO_RECALL,
+)
 
 load_dotenv()
 
@@ -80,6 +84,11 @@ summary_mode: set[int] = set()
 # z10_sessions[user_id] = {"strategy": str, "agent": agent_obj}
 z10_sessions: dict[int, dict] = {}
 z10_mode: set[int] = set()
+
+# Задание 11: агенты с 3-слойной памятью
+# z11_sessions[user_id] = MemoryAgent
+z11_sessions: dict[int, MemoryAgent] = {}
+z11_mode: set[int] = set()
 
 DEFAULT_SETTINGS = {
     "temperature": 0.7,
@@ -136,6 +145,7 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🔢 Задание 8 — Токены (счётчик в реальном времени)", callback_data="z8")],
         [InlineKeyboardButton("🗜 Задание 9 — Сжатие истории (summary)", callback_data="z9")],
         [InlineKeyboardButton("🌿 Задание 10 — Стратегии контекста", callback_data="z10")],
+        [InlineKeyboardButton("🧠 Задание 11 — Память ассистента (3 слоя)", callback_data="z11")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -147,6 +157,18 @@ def summary_agent_keyboard():
         [InlineKeyboardButton("📊 Статистика сессии", callback_data="t9_stats")],
         [InlineKeyboardButton("📝 Показать summary", callback_data="t9_summary")],
         [InlineKeyboardButton("🚪 Выйти из режима", callback_data="t9_exit")],
+    ])
+
+
+def z11_chat_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки управления в режиме агента с памятью (задание 11)."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧠 Показать всю память", callback_data="t11_show_memory"),
+         InlineKeyboardButton("📊 Статистика", callback_data="t11_stats")],
+        [InlineKeyboardButton("🗑 Сбросить сессию (STM+WM)", callback_data="t11_reset_session"),
+         InlineKeyboardButton("🧹 Забыть всё (LTM)", callback_data="t11_forget_all")],
+        [InlineKeyboardButton("🎬 Авто-демо", callback_data="t11_demo")],
+        [InlineKeyboardButton("🚪 Выйти", callback_data="t11_exit")],
     ])
 
 
@@ -332,6 +354,33 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
+
+    # Задание 11: режим агента с 3-слойной памятью
+    if user_id in z11_mode:
+        agent = z11_sessions.get(user_id)
+        if not agent:
+            await update.message.reply_text("❌ Сессия не найдена. Выбери 🧠 Задание 11 заново.")
+            return
+        try:
+            typing = await update.message.reply_text("⏳ Думаю...")
+            reply, stat = await asyncio.to_thread(agent.chat, user_text)
+            await typing.delete()
+            for chunk in split_text(reply):
+                await update.message.reply_text(chunk)
+            stat_text = (
+                f"📊 ХОД {stat.turn}\n"
+                f"{'─' * 28}\n"
+                f"Токены вход/выход : {stat.prompt_tokens:,} / {stat.completion_tokens:,}\n"
+                f"Стоимость         : {stat.cost_rub:.4f} ₽\n"
+                f"LTM загружено     : {stat.ltm_facts_loaded} фактов\n"
+                f"LTM сохранено     : {stat.ltm_facts_saved} новых фактов\n"
+                f"Всего в LTM       : {agent.ltm.count()} фактов"
+            )
+            await update.message.reply_text(stat_text, reply_markup=z11_chat_keyboard())
+        except Exception as e:
+            logger.error(f"Ошибка z11-агента: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        return
 
     # Задание 10: режим агента со стратегиями контекста
     if user_id in z10_mode:
@@ -863,6 +912,100 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Задание 11 callbacks ─────────────────────────────────────────
+    if data == "t11_show_memory":
+        agent = z11_sessions.get(user_id)
+        if not agent:
+            await query.answer("Сессия не найдена!", show_alert=True)
+            return
+        all_facts = agent.ltm.all_facts()
+        stm_msgs = agent.stm.get()
+        wm_data = agent.wm.all()
+        lines = [f"🧠 ПАМЯТЬ АССИСТЕНТА\n{'─' * 32}"]
+        lines.append(f"📥 STM (краткосрочная) — {len(stm_msgs)} сообщений:")
+        for m in stm_msgs[-4:]:
+            role_emoji = "👤" if m["role"] == "user" else "🤖"
+            lines.append(f"  {role_emoji} {m['content'][:80]}{'…' if len(m['content']) > 80 else ''}")
+        lines.append(f"\n🗂 WM (рабочая) — {len(wm_data)} записей:")
+        if wm_data:
+            for k, v in wm_data.items():
+                lines.append(f"  • {k}: {v}")
+        else:
+            lines.append("  (пусто)")
+        lines.append(f"\n🗄 LTM (долгосрочная) — {len(all_facts)} фактов:")
+        if all_facts:
+            for f in all_facts:
+                lines.append(f"  • {f}")
+        else:
+            lines.append("  (пусто — напиши что-то о себе!)")
+        await query.message.reply_text("\n".join(lines), reply_markup=z11_chat_keyboard())
+        return
+
+    if data == "t11_stats":
+        agent = z11_sessions.get(user_id)
+        if not agent or not agent.stats:
+            await query.answer("Нет данных — напиши хотя бы одно сообщение!", show_alert=True)
+            return
+        lines = [f"📊 СТАТИСТИКА — ПАМЯТЬ АССИСТЕНТА\n{'─' * 36}"]
+        lines.append(f"{'Ход':>3}  {'Вход':>7}  {'Выход':>7}  {'LTM↓':>5}  {'LTM↑':>5}  {'₽':>8}")
+        lines.append("─" * 36)
+        for s in agent.stats:
+            lines.append(
+                f"{s.turn:>3}  {s.prompt_tokens:>7,}  {s.completion_tokens:>7,}  "
+                f"{s.ltm_facts_loaded:>5}  {s.ltm_facts_saved:>5}  {s.cost_rub:>8.5f}"
+            )
+        total_cost = sum(s.cost_rub for s in agent.stats)
+        total_tok = sum(s.total_tokens for s in agent.stats)
+        lines += [
+            "─" * 36,
+            f"Итого токенов  : {total_tok:,}",
+            f"Итого стоимость: {total_cost:.5f} ₽",
+            f"Фактов в LTM   : {agent.ltm.count()}",
+        ]
+        await query.message.reply_text("\n".join(lines), reply_markup=z11_chat_keyboard())
+        return
+
+    if data == "t11_reset_session":
+        agent = z11_sessions.get(user_id)
+        if agent:
+            agent.reset_session()
+        await query.edit_message_text(
+            "🗑 Сессия сброшена (STM + WM очищены).\n"
+            "LTM (долгосрочная память) сохранена.\n\n"
+            "Напиши что-нибудь — агент помнит тебя из прошлых сессий:",
+            reply_markup=z11_chat_keyboard()
+        )
+        return
+
+    if data == "t11_forget_all":
+        agent = z11_sessions.get(user_id)
+        if agent:
+            agent.forget_all()
+        await query.edit_message_text(
+            "🧹 Полная очистка — забыто всё (STM + WM + LTM).\n\n"
+            "Агент не помнит о тебе ничего. Начнём с чистого листа.\n"
+            "Напиши что-нибудь:",
+            reply_markup=z11_chat_keyboard()
+        )
+        return
+
+    if data == "t11_demo":
+        agent = z11_sessions.get(user_id)
+        if not agent:
+            await query.answer("Сессия не найдена!", show_alert=True)
+            return
+        await query.edit_message_text("🎬 Запускаю авто-демо памяти...")
+        await run_z11_auto_demo(user_id, query.message.reply_text)
+        return
+
+    if data == "t11_exit":
+        z11_mode.discard(user_id)
+        await query.edit_message_text(
+            "👋 Вышел из режима памяти ассистента.\n\n"
+            "LTM (долгосрочная память) сохранена — при следующем входе агент тебя вспомнит!"
+        )
+        return
+
     # --- Задания ---
     text = pending_text.get(user_id)
     if not text:
@@ -909,6 +1052,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🎬 Авто-демо — одно и то же ТЗ через все 3 стратегии",
                 reply_markup=z10_menu_keyboard()
             )
+            parts = []
+        elif data == "z11":
+            await start_z11_agent(user_id, text, send)
             parts = []
         else:
             parts = ["Неизвестное задание"]
@@ -1294,6 +1440,133 @@ async def start_summary_agent_mode(user_id: int, first_message: str, send) -> No
     except Exception as e:
         logger.error(f"Ошибка summary-агента (первое сообщение): {e}")
         await send(f"❌ Ошибка: {e}")
+
+
+# ─────────────────────────── ЗАДАНИЕ 11 ────────────────────────────
+
+async def start_z11_agent(user_id: int, first_message: str, send) -> None:
+    """Создать MemoryAgent для пользователя и обработать первое сообщение."""
+    persist_dir = os.path.join(os.path.dirname(__file__), "..", ".chroma_db")
+    agent = MemoryAgent(
+        client=deepseek,
+        user_id=user_id,
+        model="deepseek-chat",
+        stm_window=10,
+        persist_dir=persist_dir,
+    )
+    z11_sessions[user_id] = agent
+    z11_mode.add(user_id)
+
+    existing_facts = agent.ltm.count()
+    intro_suffix = (
+        f"\n\n📚 Я помню тебя из прошлой сессии ({existing_facts} фактов в LTM)."
+        if existing_facts > 0
+        else "\n\nЭто первая встреча — расскажи о себе, я запомню!"
+    )
+
+    await send(
+        "🧠 ЗАДАНИЕ 11 — Модель памяти ассистента\n\n"
+        "Три слоя памяти:\n"
+        "• STM (краткосрочная) — последние 10 сообщений сессии\n"
+        "• WM (рабочая) — контекст текущей задачи\n"
+        "• LTM (долгосрочная) — факты о тебе в ChromaDB (не исчезают!)\n\n"
+        "Как работает:\n"
+        "1️⃣ LLM ищет похожие факты в LTM по запросу\n"
+        "2️⃣ Факты + STM → формирует контекст\n"
+        "3️⃣ После ответа — извлекает новые факты и сохраняет в LTM"
+        + intro_suffix
+    )
+
+    try:
+        typing = await send("⏳ Думаю...")
+        reply, stat = await asyncio.to_thread(agent.chat, first_message)
+        await typing.delete()
+        for chunk in split_text(reply):
+            await send(chunk)
+        stat_text = (
+            f"📊 ХОД {stat.turn}\n"
+            f"{'─' * 28}\n"
+            f"Токены вход/выход : {stat.prompt_tokens:,} / {stat.completion_tokens:,}\n"
+            f"Стоимость         : {stat.cost_rub:.4f} ₽\n"
+            f"LTM загружено     : {stat.ltm_facts_loaded} фактов\n"
+            f"LTM сохранено     : {stat.ltm_facts_saved} новых фактов\n"
+            f"Всего в LTM       : {agent.ltm.count()} фактов"
+        )
+        await send(stat_text, reply_markup=z11_chat_keyboard())
+    except Exception as e:
+        logger.error(f"Ошибка z11-агента (первое сообщение): {e}")
+        await send(f"❌ Ошибка: {e}")
+
+
+async def run_z11_auto_demo(user_id: int, send) -> None:
+    """Авто-демо: сначала вводим факты (DEMO_INTRO), потом проверяем память (DEMO_RECALL)."""
+    agent = z11_sessions.get(user_id)
+    if not agent:
+        await send("❌ Сессия не найдена. Войди в задание 11 заново.")
+        return
+
+    # Сбросить сессию, но сохранить LTM
+    agent.reset_session()
+
+    await send(
+        "🎬 АВТО-ДЕМО — Долгосрочная память\n\n"
+        "Фаза 1: Вводим информацию о пользователе (3 сообщения)\n"
+        "→ Агент извлечёт и сохранит факты в LTM\n\n"
+        "Фаза 2: Новая сессия (STM сброшен)\n"
+        "→ Проверяем, помнит ли агент факты только из LTM\n\n"
+        "⏳ Запускаю..."
+    )
+
+    # ── Фаза 1: ввод фактов ─────────────────────────────────────────
+    await send("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📥 ФАЗА 1 — Запоминаем факты\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    for msg in DEMO_INTRO:
+        await send(f"👤 Пользователь:\n{msg}")
+        try:
+            reply, stat = await asyncio.to_thread(agent.chat, msg)
+            for chunk in split_text(reply):
+                await send(f"🤖 Агент:\n{chunk}")
+            await send(
+                f"📊 LTM: сохранено {stat.ltm_facts_saved} фактов | "
+                f"Итого в LTM: {agent.ltm.count()}"
+            )
+        except Exception as e:
+            await send(f"❌ Ошибка: {e}")
+
+    # Показать все сохранённые факты
+    all_facts = agent.ltm.all_facts()
+    facts_display = "\n".join(f"  • {f}" for f in all_facts) if all_facts else "  (нет)"
+    await send(f"🗄 Факты в LTM:\n{facts_display}")
+
+    # ── Сброс STM — имитация новой сессии ──────────────────────────
+    agent.stm.clear()
+    agent.wm.clear()
+    await send(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔄 НОВАЯ СЕССИЯ — STM сброшен\n"
+        "Агент не видит предыдущего диалога.\n"
+        "Только LTM сохранена.\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    # ── Фаза 2: проверка памяти ──────────────────────────────────────
+    await send("📤 ФАЗА 2 — Проверяем долгосрочную память")
+    for msg in DEMO_RECALL:
+        await send(f"👤 Пользователь:\n{msg}")
+        try:
+            reply, stat = await asyncio.to_thread(agent.chat, msg)
+            for chunk in split_text(reply):
+                await send(f"🤖 Агент:\n{chunk}")
+            await send(f"📊 LTM загружено: {stat.ltm_facts_loaded} фактов | токены: {stat.total_tokens:,}")
+        except Exception as e:
+            await send(f"❌ Ошибка: {e}")
+
+    await send(
+        "✅ Демо завершено!\n\n"
+        "Агент отвечал правильно, используя только LTM —\n"
+        "без истории диалога в STM.\n\n"
+        f"Итого фактов в LTM: {agent.ltm.count()}",
+        reply_markup=z11_chat_keyboard()
+    )
 
 
 # ─────────────────────────── ЗАДАНИЕ 1 ─────────────────────────────
