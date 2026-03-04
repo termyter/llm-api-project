@@ -231,14 +231,17 @@ class PersonalizedAgent:
         model: str = "deepseek-chat",
         stm_window: int = 10,
         persist_dir: str | None = None,
+        demo_mode: bool = False,
     ):
         self.client = client
         self.user_id = user_id
         self.model = model
+        self.demo_mode = demo_mode  # в demo_mode пропускаем LTM и факт-экстракцию
 
         self.stm = ShortTermMemory(window=stm_window)
         self.wm = WorkingMemory()
-        self.ltm = LongTermMemory(user_id=user_id, persist_dir=persist_dir)
+        # В demo_mode не инициализируем ChromaDB — быстрее
+        self.ltm = None if demo_mode else LongTermMemory(user_id=user_id, persist_dir=persist_dir)
 
         self.profile_manager = ProfileManager()
         self.profile = profile or self.profile_manager.load(user_id)
@@ -250,7 +253,7 @@ class PersonalizedAgent:
     # ── обновить имя из LTM ───────────────────────────────────────────────────
     def _sync_name_from_ltm(self) -> None:
         """Если профиль не имеет имени — ищем в LTM."""
-        if self.profile.name:
+        if self.profile.name or self.demo_mode or self.ltm is None:
             return
         facts = self.ltm.search("как зовут пользователя имя", n=3)
         for f in facts:
@@ -314,8 +317,8 @@ class PersonalizedAgent:
         self._turn += 1
         self._sync_name_from_ltm()
 
-        # 1. Загрузить релевантные факты из LTM
-        ltm_facts = self.ltm.search(user_message, n=5)
+        # 1. Загрузить релевантные факты из LTM (пропускаем в demo_mode)
+        ltm_facts = self.ltm.search(user_message, n=5) if self.ltm is not None else []
 
         # 2. Персонализированный system prompt
         system = self._build_system(ltm_facts)
@@ -343,8 +346,8 @@ class PersonalizedAgent:
         self.stm.add("user", user_message)
         self.stm.add("assistant", reply)
 
-        # 6. Извлечь и сохранить факты
-        facts_saved = self._extract_and_save_facts(user_message)
+        # 6. Извлечь и сохранить факты (пропускаем в demo_mode — нет LTM)
+        facts_saved = 0 if self.demo_mode else self._extract_and_save_facts(user_message)
 
         stats = MemoryTurnStats(
             turn=self._turn,
@@ -364,7 +367,8 @@ class PersonalizedAgent:
 
     def forget_all(self) -> None:
         """Очистить LTM."""
-        self.ltm.clear()
+        if self.ltm is not None:
+            self.ltm.clear()
 
     def set_profile(self, profile: UserProfile) -> None:
         self.profile = profile

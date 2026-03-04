@@ -1955,13 +1955,12 @@ async def run_z12_auto_demo(user_id: int, send) -> None:
             profile=profile,
             model="deepseek-chat",
             stm_window=4,
+            demo_mode=True,  # без LTM и факт-экстракции — в 2x быстрее
         )
-        agent.forget_all()
 
         label = labels[preset_key]
         await send(f"⏳ Генерирую ответ для {label}...")
         reply, stat = await asyncio.to_thread(agent.chat, DEMO_QUESTION)
-        agent.forget_all()
         results.append((label, profile, reply, stat))
 
     # Показываем результаты
@@ -1977,10 +1976,40 @@ async def run_z12_auto_demo(user_id: int, send) -> None:
             await send(chunk)
         await send(f"📊 {stat.prompt_tokens}+{stat.completion_tokens} токенов")
 
+    # ── Сравнительные выводы ──────────────────────────────────────────────────
+    lengths = [(label, len(reply.split())) for label, _, reply, _ in results]
+    tokens_list = [(label, stat.prompt_tokens + stat.completion_tokens) for label, _, _, stat in results]
+
+    longest = max(lengths, key=lambda x: x[1])
+    shortest = min(lengths, key=lambda x: x[1])
+
+    comparison = (
+        "📊 *Сравнение ответов*\n\n"
+        "*Длина (слов):*\n"
+    )
+    for label, wc in lengths:
+        bar = "█" * (wc // 50) + f" {wc}"
+        comparison += f"  {label}: {bar}\n"
+
+    comparison += "\n*Токены (запрос+ответ):*\n"
+    for label, tok in tokens_list:
+        comparison += f"  {label}: {tok} токенов\n"
+
+    comparison += (
+        f"\n*Выводы:*\n"
+        f"• Самый подробный: {longest[0]} ({longest[1]} слов)\n"
+        f"• Самый лаконичный: {shortest[0]} ({shortest[1]} слов)\n"
+        f"• Разница в длине: ×{round(longest[1]/max(shortest[1],1), 1)}\n\n"
+        f"*Что изменил профиль:*\n"
+        f"• 👨‍💻 Технарь — глубокие технические детали, термины, примеры кода\n"
+        f"• 📊 Менеджер — маркированный список, бизнес-фокус, без технических деталей\n"
+        f"• 🌱 Новичок — простые аналогии, дружелюбный тон, без жаргона\n\n"
+        f"Один промпт → три разных адаптации под аудиторию."
+    )
+
+    await send(comparison, parse_mode="Markdown")
     await send(
-        "✅ *Демо завершено*\n\n"
-        "Один вопрос — три принципиально разных ответа.\n"
-        "Профиль меняет: длину, стиль, уровень деталей, терминологию.",
+        "✅ *Демо завершено*\n\nПопробуй сам — выбери профиль и задай свой вопрос.",
         parse_mode="Markdown",
         reply_markup=z12_chat_keyboard(),
     )
