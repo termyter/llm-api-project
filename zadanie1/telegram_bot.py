@@ -31,6 +31,10 @@ from zadanie11.day11_memory import (
     MemoryAgent,
     DEMO_INTRO, DEMO_RECALL,
 )
+from zadanie12.day12_profile import (
+    PersonalizedAgent, UserProfile, ProfileManager,
+    PRESET_PROFILES, DEMO_QUESTION, DEMO_INTRO_MESSAGES,
+)
 
 load_dotenv()
 
@@ -90,6 +94,12 @@ z10_mode: set[int] = set()
 z11_sessions: dict[int, MemoryAgent] = {}
 z11_mode: set[int] = set()
 
+# Задание 12: персонализированный агент
+# z12_sessions[user_id] = PersonalizedAgent
+z12_sessions: dict[int, PersonalizedAgent] = {}
+z12_mode: set[int] = set()
+z12_profile_manager = ProfileManager()
+
 DEFAULT_SETTINGS = {
     "temperature": 0.7,
     "model": "deepseek-chat",
@@ -146,6 +156,7 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🗜 Задание 9 — Сжатие истории (summary)", callback_data="z9")],
         [InlineKeyboardButton("🌿 Задание 10 — Стратегии контекста", callback_data="z10")],
         [InlineKeyboardButton("🧠 Задание 11 — Память ассистента (3 слоя)", callback_data="z11")],
+        [InlineKeyboardButton("🎭 Задание 12 — Персонализация профилей", callback_data="z12")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -354,6 +365,31 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
+
+    # Задание 12: персонализированный агент
+    if user_id in z12_mode:
+        agent = z12_sessions.get(user_id)
+        if not agent:
+            await update.message.reply_text("❌ Сессия не найдена. Выбери 🎭 Задание 12 заново.")
+            return
+        try:
+            typing = await update.message.reply_text("⏳ Думаю...")
+            reply, stat = await asyncio.to_thread(agent.chat, user_text)
+            await typing.delete()
+            for chunk in split_text(reply):
+                await update.message.reply_text(chunk)
+            stat_text = (
+                f"📊 ХОД {stat.turn} │ Профиль: {agent.profile.style}/{agent.profile.expertise}\n"
+                f"{'─' * 28}\n"
+                f"Токены вход/выход : {stat.prompt_tokens:,} / {stat.completion_tokens:,}\n"
+                f"Стоимость         : {stat.cost_rub:.4f} ₽\n"
+                f"LTM фактов        : {agent.ltm.count()}"
+            )
+            await update.message.reply_text(stat_text, reply_markup=z12_chat_keyboard())
+        except Exception as e:
+            logger.error(f"Ошибка z12-агента: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        return
 
     # Задание 11: режим агента с 3-слойной памятью
     if user_id in z11_mode:
@@ -1006,6 +1042,71 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Задание 12 callbacks ─────────────────────────────────────────
+    if data == "t12_profile":
+        agent = z12_sessions.get(user_id)
+        if not agent:
+            await query.answer("Сессия не найдена!", show_alert=True)
+            return
+        text = f"👤 *Текущий профиль*\n\n{agent.profile.as_summary()}\n\nLTM: {agent.ltm.count()} фактов"
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=z12_chat_keyboard())
+        return
+
+    if data == "t12_switch":
+        await query.edit_message_text(
+            "🎭 Выбери профиль:",
+            reply_markup=z12_preset_keyboard(),
+        )
+        return
+
+    if data.startswith("t12_preset_"):
+        preset_key = data.replace("t12_preset_", "")
+        preset_map = {"техник": "техник", "менеджер": "менеджер", "новичок": "новичок"}
+        if preset_key not in preset_map:
+            await query.answer("Неизвестный профиль", show_alert=True)
+            return
+        profile = UserProfile.from_preset(str(user_id), preset_map[preset_key])
+        agent = z12_sessions.get(user_id)
+        if not agent:
+            await query.answer("Сессия не найдена!", show_alert=True)
+            return
+        agent.set_profile(profile)
+        agent.reset_session()
+        label = PRESET_PROFILES[preset_map[preset_key]]["display_name"]
+        await query.edit_message_text(
+            f"✅ Профиль переключён: *{label}*\n\n{profile.as_summary()}\n\nСессия сброшена. Пиши — отвечу в новом стиле!",
+            parse_mode="Markdown",
+            reply_markup=z12_chat_keyboard(),
+        )
+        return
+
+    if data == "t12_reset":
+        agent = z12_sessions.get(user_id)
+        if agent:
+            agent.reset_session()
+        await query.edit_message_text(
+            "🗑 Сессия сброшена (STM очищен). Профиль и LTM сохранены.",
+            reply_markup=z12_chat_keyboard(),
+        )
+        return
+
+    if data == "t12_demo":
+        agent = z12_sessions.get(user_id)
+        if not agent:
+            await query.answer("Сессия не найдена!", show_alert=True)
+            return
+        await query.edit_message_text("🎭 Запускаю демо трёх профилей...")
+        await run_z12_auto_demo(user_id, query.message.reply_text)
+        return
+
+    if data == "t12_exit":
+        z12_mode.discard(user_id)
+        await query.edit_message_text(
+            "👋 Вышел из режима персонализации.\n\n"
+            "Профиль сохранён — при следующем входе агент будет в том же стиле."
+        )
+        return
+
     # --- Задания ---
     text = pending_text.get(user_id)
     if not text:
@@ -1055,6 +1156,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = []
         elif data == "z11":
             await start_z11_agent(user_id, text, send)
+            parts = []
+        elif data == "z12":
+            await start_z12_agent(user_id, text, send)
             parts = []
         else:
             parts = ["Неизвестное задание"]
@@ -1765,6 +1869,150 @@ async def run_zadanie5(text, send):
     msg = f"🏆 ВЫВОД от Claude Opus:\n\n{conclusion}"
     for chunk in split_text(msg):
         await send(chunk)
+
+
+# ─────────────────────────── ЗАДАНИЕ 12: ПЕРСОНАЛИЗАЦИЯ ─────────────
+
+def z12_chat_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👤 Мой профиль", callback_data="t12_profile"),
+         InlineKeyboardButton("✏️ Сменить профиль", callback_data="t12_switch")],
+        [InlineKeyboardButton("🎭 Авто-демо (3 профиля)", callback_data="t12_demo")],
+        [InlineKeyboardButton("🗑 Сбросить сессию", callback_data="t12_reset"),
+         InlineKeyboardButton("🚪 Выйти", callback_data="t12_exit")],
+    ])
+
+
+def z12_preset_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👨‍💻 Технарь", callback_data="t12_preset_техник")],
+        [InlineKeyboardButton("📊 Менеджер", callback_data="t12_preset_менеджер")],
+        [InlineKeyboardButton("🌱 Новичок", callback_data="t12_preset_новичок")],
+        [InlineKeyboardButton("↩️ Назад", callback_data="t12_profile")],
+    ])
+
+
+async def start_z12_agent(user_id: int, first_message: str, send) -> None:
+    z12_mode.add(user_id)
+    if user_id not in z12_sessions:
+        profile = z12_profile_manager.load(str(user_id))
+        agent = PersonalizedAgent(
+            client=deepseek,
+            user_id=str(user_id),
+            profile=profile,
+            model="deepseek-chat",
+            stm_window=10,
+        )
+        z12_sessions[user_id] = agent
+
+    agent = z12_sessions[user_id]
+    ltm_count = agent.ltm.count()
+
+    intro = (
+        f"🎭 *Задание 12 — Персонализация*\n\n"
+        f"Активный профиль:\n{agent.profile.as_summary()}\n\n"
+        f"LTM: {ltm_count} фактов о тебе\n\n"
+        f"Напиши что-нибудь — или нажми «🎭 Авто-демо» чтобы увидеть\n"
+        f"один вопрос через 3 разных профиля."
+    )
+    await send(intro, parse_mode="Markdown")
+
+    if first_message:
+        typing = await send("⏳ Думаю...")
+        try:
+            reply, stat = await asyncio.to_thread(agent.chat, first_message)
+            if hasattr(typing, "delete"):
+                await typing.delete()
+            for chunk in split_text(reply):
+                await send(chunk)
+            await send(
+                f"📊 Профиль: {agent.profile.style}/{agent.profile.expertise} | "
+                f"Токены: {stat.prompt_tokens}+{stat.completion_tokens}",
+                reply_markup=z12_chat_keyboard(),
+            )
+        except Exception as e:
+            await send(f"❌ Ошибка: {e}")
+
+
+async def run_z12_auto_demo(user_id: int, send) -> None:
+    """Отправляет DEMO_QUESTION через 3 разных профиля, показывает разницу."""
+    presets = ["техник", "менеджер", "новичок"]
+    labels = {"техник": "👨‍💻 Технарь", "менеджер": "📊 Менеджер", "новичок": "🌱 Новичок"}
+
+    await send(
+        f"🎭 *Авто-демо: один вопрос — три профиля*\n\n"
+        f"Вопрос: _{DEMO_QUESTION}_\n\n"
+        f"Смотрим как отвечают разные профили...",
+        parse_mode="Markdown",
+    )
+
+    results = []
+    for preset_key in presets:
+        profile = UserProfile.from_preset(f"demo_{preset_key}", preset_key)
+        agent = PersonalizedAgent(
+            client=deepseek,
+            user_id=f"demo_{preset_key}",
+            profile=profile,
+            model="deepseek-chat",
+            stm_window=4,
+            demo_mode=True,  # без LTM и факт-экстракции — в 2x быстрее
+        )
+
+        label = labels[preset_key]
+        await send(f"⏳ Генерирую ответ для {label}...")
+        reply, stat = await asyncio.to_thread(agent.chat, DEMO_QUESTION)
+        results.append((label, profile, reply, stat))
+
+    # Показываем результаты
+    for label, profile, reply, stat in results:
+        header = (
+            f"─────────────────────────\n"
+            f"{label}\n"
+            f"Стиль: {profile.style} | Формат: {profile.format} | Уровень: {profile.expertise}\n"
+            f"─────────────────────────"
+        )
+        await send(header)
+        for chunk in split_text(reply):
+            await send(chunk)
+        await send(f"📊 {stat.prompt_tokens}+{stat.completion_tokens} токенов")
+
+    # ── Сравнительные выводы ──────────────────────────────────────────────────
+    lengths = [(label, len(reply.split())) for label, _, reply, _ in results]
+    tokens_list = [(label, stat.prompt_tokens + stat.completion_tokens) for label, _, _, stat in results]
+
+    longest = max(lengths, key=lambda x: x[1])
+    shortest = min(lengths, key=lambda x: x[1])
+
+    comparison = (
+        "📊 *Сравнение ответов*\n\n"
+        "*Длина (слов):*\n"
+    )
+    for label, wc in lengths:
+        bar = "█" * (wc // 50) + f" {wc}"
+        comparison += f"  {label}: {bar}\n"
+
+    comparison += "\n*Токены (запрос+ответ):*\n"
+    for label, tok in tokens_list:
+        comparison += f"  {label}: {tok} токенов\n"
+
+    comparison += (
+        f"\n*Выводы:*\n"
+        f"• Самый подробный: {longest[0]} ({longest[1]} слов)\n"
+        f"• Самый лаконичный: {shortest[0]} ({shortest[1]} слов)\n"
+        f"• Разница в длине: ×{round(longest[1]/max(shortest[1],1), 1)}\n\n"
+        f"*Что изменил профиль:*\n"
+        f"• 👨‍💻 Технарь — глубокие технические детали, термины, примеры кода\n"
+        f"• 📊 Менеджер — маркированный список, бизнес-фокус, без технических деталей\n"
+        f"• 🌱 Новичок — простые аналогии, дружелюбный тон, без жаргона\n\n"
+        f"Один промпт → три разных адаптации под аудиторию."
+    )
+
+    await send(comparison, parse_mode="Markdown")
+    await send(
+        "✅ *Демо завершено*\n\nПопробуй сам — выбери профиль и задай свой вопрос.",
+        parse_mode="Markdown",
+        reply_markup=z12_chat_keyboard(),
+    )
 
 
 # ─────────────────────────── ЗАПУСК ────────────────────────────────
