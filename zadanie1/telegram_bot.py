@@ -109,6 +109,9 @@ z13_sessions: dict[int, TaskContext] = {}
 z13_mode: set[int] = set()   # ожидаем ввод задачи от пользователя
 _z13_fsm: TaskStateMachine | None = None  # ленивая инициализация
 
+# Режим планировщика (основной бот, вне z13)
+planner_mode: set[int] = set()
+
 
 def get_z13_fsm() -> TaskStateMachine:
     global _z13_fsm
@@ -161,6 +164,7 @@ def set_setting(user_id, key, value):
 
 def zadanie_keyboard():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Планировать задачу (/plan)", callback_data="plan")],
         [InlineKeyboardButton("📝 Задание 1 — Обычный ответ", callback_data="z1")],
         [InlineKeyboardButton("📐 Задание 2 — Форматы (с/без ограничений)", callback_data="z2")],
         [InlineKeyboardButton("🧠 Задание 3 — Методы рассуждения", callback_data="z3")],
@@ -337,6 +341,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /plan — режим планировщика задач через FSM."""
+    user_id = update.effective_user.id
+    planner_mode.add(user_id)
+    # Если передали текст прямо в команде: /plan Написать отчёт
+    args = context.args
+    if args:
+        task_text = " ".join(args)
+        planner_mode.discard(user_id)
+        await update.message.reply_text("⏳ Запускаю планировщик...")
+        await start_z13_task(user_id, task_text, update.message.reply_text)
+    else:
+        await update.message.reply_text(
+            "📋 *Планировщик задач*\n\n"
+            "Опиши задачу — я разобью её на шаги, выполню и проверю результат.\n\n"
+            "_Например: «Написать план статьи про Python» или «Составить список дел на неделю»_",
+            parse_mode="Markdown"
+        )
+
+
 async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_text.pop(update.effective_user.id, None)
     await update.message.reply_text("🧹 Диалог очищен! Можем начинать заново. 🍚")
@@ -382,6 +406,13 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
+
+    # Планировщик (/plan) — ожидаем задачу вне режима z13
+    if user_id in planner_mode:
+        planner_mode.discard(user_id)
+        await update.message.reply_text("⏳ Принято! Запускаю планировщик...")
+        await start_z13_task(user_id, user_text, update.message.reply_text)
+        return
 
     # Задание 13: Task State Machine — ожидаем задачу для FSM
     if user_id in z13_mode:
@@ -570,6 +601,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     data = query.data
+
+    # --- Планировщик ---
+    if data == "plan":
+        planner_mode.add(user_id)
+        await query.edit_message_text(
+            "📋 *Планировщик задач*\n\n"
+            "Опиши задачу — я разобью её на шаги, выполню и проверю результат.\n\n"
+            "_Например: «Написать план статьи про Python» или «Составить список дел на неделю»_",
+            parse_mode="Markdown"
+        )
+        return
 
     # --- Настройки ---
     if data == "noop":
@@ -2324,6 +2366,7 @@ def main():
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("newchat", newchat_command))
     app.add_handler(CommandHandler("restart", restart_command))
+    app.add_handler(CommandHandler("plan", plan_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
