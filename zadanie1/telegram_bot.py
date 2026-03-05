@@ -35,6 +35,9 @@ from zadanie12.day12_profile import (
     PersonalizedAgent, UserProfile, ProfileManager,
     PRESET_PROFILES, DEMO_QUESTION, DEMO_INTRO_MESSAGES,
 )
+from zadanie13.day13_statemachine import (
+    TaskStateMachine, TaskContext, DEMO_TASK, TaskState,
+)
 
 load_dotenv()
 
@@ -100,6 +103,19 @@ z12_sessions: dict[int, PersonalizedAgent] = {}
 z12_mode: set[int] = set()
 z12_profile_manager = ProfileManager()
 
+# Задание 13: Task State Machine
+# z13_sessions[user_id] = TaskContext  (текущая задача)
+z13_sessions: dict[int, TaskContext] = {}
+z13_mode: set[int] = set()   # ожидаем ввод задачи от пользователя
+_z13_fsm: TaskStateMachine | None = None  # ленивая инициализация
+
+
+def get_z13_fsm() -> TaskStateMachine:
+    global _z13_fsm
+    if _z13_fsm is None:
+        _z13_fsm = TaskStateMachine(client=deepseek)
+    return _z13_fsm
+
 DEFAULT_SETTINGS = {
     "temperature": 0.7,
     "model": "deepseek-chat",
@@ -157,6 +173,7 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🌿 Задание 10 — Стратегии контекста", callback_data="z10")],
         [InlineKeyboardButton("🧠 Задание 11 — Память ассистента (3 слоя)", callback_data="z11")],
         [InlineKeyboardButton("🎭 Задание 12 — Персонализация профилей", callback_data="z12")],
+        [InlineKeyboardButton("🔄 Задание 13 — Task State Machine (FSM)", callback_data="z13")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -365,6 +382,13 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
+
+    # Задание 13: Task State Machine — ожидаем задачу для FSM
+    if user_id in z13_mode:
+        z13_mode.discard(user_id)
+        await update.message.reply_text("⏳ Принято! Запускаю автомат задачи...")
+        await start_z13_task(user_id, user_text, update.message.reply_text)
+        return
 
     # Задание 12: персонализированный агент
     if user_id in z12_mode:
@@ -831,6 +855,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(1)
         sys.exit(0)
 
+    # ── Задание 13: Task State Machine ───────────────────────────────────────
+    if data == "z13":
+        await query.edit_message_text(
+            "🔄 *ЗАДАНИЕ 13 — Task State Machine*\n\n"
+            "Детерминированный конечный автомат задачи.\n\n"
+            "Три этапа с разными LLM-промптами:\n"
+            "📋 *Планирование* — LLM составляет план, НЕ выполняет\n"
+            "⚙️ *Выполнение* — LLM выполняет по утверждённому плану\n"
+            "🔍 *Валидация* — LLM проверяет и обосновывает результат\n\n"
+            "Переходы детерминированы — не LLM решает, а код.\n"
+            "Состояние сохраняется в JSON (пауза/продолжение).\n\n"
+            "Введи задачу — и автомат запустится:",
+            parse_mode="Markdown",
+            reply_markup=z13_entry_keyboard(),
+        )
+        z13_mode.add(user_id)
+        return
+
     # ── Задание 10: управление ────────────────────────────────────────────────
     if data == "z10":
         await query.edit_message_text(
@@ -1107,6 +1149,106 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Задание 13 callbacks ─────────────────────────────────────────
+    if data == "t13_advance":
+        ctx = z13_sessions.get(user_id)
+        if not ctx:
+            await query.answer("Задача не найдена!", show_alert=True)
+            return
+        fsm = get_z13_fsm()
+        new_state = fsm.advance(ctx)
+        if new_state == TaskState.DONE:
+            await query.edit_message_text(
+                f"✅ *Задача завершена!*\n\n{ctx.summary()}",
+                parse_mode="Markdown",
+                reply_markup=z13_task_keyboard(new_state),
+            )
+            return
+        intro = fsm.get_stage_intro(ctx)
+        await query.edit_message_text(
+            intro or f"▶️ Переходим к: {ctx.label()}",
+            parse_mode="Markdown",
+        )
+        await query.message.reply_text("⏳ Запускаю этап...")
+        result = await asyncio.to_thread(fsm.run_current_stage, ctx)
+        for chunk in split_text(result):
+            await query.message.reply_text(chunk)
+        await query.message.reply_text(
+            ctx.summary(),
+            parse_mode="Markdown",
+            reply_markup=z13_task_keyboard(ctx.state()),
+        )
+        return
+
+    if data == "t13_retry":
+        ctx = z13_sessions.get(user_id)
+        if not ctx:
+            await query.answer("Задача не найдена!", show_alert=True)
+            return
+        fsm = get_z13_fsm()
+        fsm.retry_execution(ctx)
+        await query.edit_message_text("🔁 Повторяю выполнение...")
+        result = await asyncio.to_thread(fsm.run_current_stage, ctx)
+        for chunk in split_text(result):
+            await query.message.reply_text(chunk)
+        await query.message.reply_text(
+            ctx.summary(),
+            parse_mode="Markdown",
+            reply_markup=z13_task_keyboard(ctx.state()),
+        )
+        return
+
+    if data == "t13_pause":
+        ctx = z13_sessions.get(user_id)
+        if not ctx:
+            await query.answer("Задача не найдена!", show_alert=True)
+            return
+        get_z13_fsm().pause(ctx)
+        await query.edit_message_text(
+            f"⏸️ *Задача поставлена на паузу*\n\n{ctx.summary()}\n\n"
+            f"Состояние сохранено. Нажми «▶️ Продолжить» чтобы вернуться.",
+            parse_mode="Markdown",
+            reply_markup=z13_task_keyboard(ctx.state()),
+        )
+        return
+
+    if data == "t13_resume":
+        ctx = z13_sessions.get(user_id)
+        if not ctx:
+            await query.answer("Задача не найдена!", show_alert=True)
+            return
+        fsm = get_z13_fsm()
+        resumed_state = fsm.resume(ctx)
+        await query.edit_message_text(
+            f"▶️ *Продолжаю с этапа: {ctx.label()}*\n\n{ctx.summary()}",
+            parse_mode="Markdown",
+            reply_markup=z13_task_keyboard(resumed_state),
+        )
+        return
+
+    if data == "t13_new":
+        z13_mode.add(user_id)
+        z13_sessions.pop(user_id, None)
+        await query.edit_message_text(
+            "📝 Введи новую задачу для автомата:",
+            reply_markup=z13_entry_keyboard(),
+        )
+        return
+
+    if data == "t13_demo":
+        await query.edit_message_text("🎬 Запускаю авто-демо Task State Machine...")
+        await run_z13_auto_demo(user_id, query.message.reply_text)
+        return
+
+    if data == "t13_exit":
+        z13_mode.discard(user_id)
+        z13_sessions.pop(user_id, None)
+        await query.edit_message_text(
+            "👋 Вышел из Task State Machine.\n\n"
+            "Состояние задачи удалено из памяти."
+        )
+        return
+
     # --- Задания ---
     text = pending_text.get(user_id)
     if not text:
@@ -1159,6 +1301,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = []
         elif data == "z12":
             await start_z12_agent(user_id, text, send)
+            parts = []
+        elif data == "z13":
+            await start_z13_task(user_id, text, send)
             parts = []
         else:
             parts = ["Неизвестное задание"]
@@ -2012,6 +2157,119 @@ async def run_z12_auto_demo(user_id: int, send) -> None:
         "✅ *Демо завершено*\n\nПопробуй сам — выбери профиль и задай свой вопрос.",
         parse_mode="Markdown",
         reply_markup=z12_chat_keyboard(),
+    )
+
+
+# ─────────────────────────── ЗАДАНИЕ 13: TASK STATE MACHINE ─────────
+
+def z13_entry_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура при входе — до того как задача введена."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎬 Авто-демо (готовая задача)", callback_data="t13_demo")],
+        [InlineKeyboardButton("🚪 Выйти", callback_data="t13_exit")],
+    ])
+
+
+def z13_task_keyboard(state: TaskState) -> InlineKeyboardMarkup:
+    """Клавиатура зависит от текущего состояния автомата."""
+    if state == TaskState.PLANNING:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Выполнить по плану", callback_data="t13_advance")],
+            [InlineKeyboardButton("⏸️ Пауза", callback_data="t13_pause"),
+             InlineKeyboardButton("🎬 Демо", callback_data="t13_demo")],
+            [InlineKeyboardButton("📝 Новая задача", callback_data="t13_new"),
+             InlineKeyboardButton("🚪 Выйти", callback_data="t13_exit")],
+        ])
+    elif state == TaskState.EXECUTION:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔍 Проверить результат", callback_data="t13_advance")],
+            [InlineKeyboardButton("🔁 Повторить выполнение", callback_data="t13_retry")],
+            [InlineKeyboardButton("⏸️ Пауза", callback_data="t13_pause")],
+            [InlineKeyboardButton("📝 Новая задача", callback_data="t13_new"),
+             InlineKeyboardButton("🚪 Выйти", callback_data="t13_exit")],
+        ])
+    elif state == TaskState.VALIDATION:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Завершить задачу", callback_data="t13_advance")],
+            [InlineKeyboardButton("🔁 Повторить выполнение", callback_data="t13_retry")],
+            [InlineKeyboardButton("⏸️ Пауза", callback_data="t13_pause")],
+            [InlineKeyboardButton("📝 Новая задача", callback_data="t13_new"),
+             InlineKeyboardButton("🚪 Выйти", callback_data="t13_exit")],
+        ])
+    elif state == TaskState.PAUSED:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("▶️ Продолжить", callback_data="t13_resume")],
+            [InlineKeyboardButton("📝 Новая задача", callback_data="t13_new"),
+             InlineKeyboardButton("🚪 Выйти", callback_data="t13_exit")],
+        ])
+    else:  # DONE или FAILED
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📝 Новая задача", callback_data="t13_new")],
+            [InlineKeyboardButton("🚪 Выйти", callback_data="t13_exit")],
+        ])
+
+
+async def start_z13_task(user_id: int, task_text: str, send) -> None:
+    """Создать новую задачу и запустить этап планирования."""
+    fsm = get_z13_fsm()
+    ctx = fsm.create_task(str(user_id), task_text)
+    z13_sessions[user_id] = ctx
+
+    # Этап 1: Планирование
+    intro = fsm.get_stage_intro(ctx)
+    await send(intro, parse_mode="Markdown")
+
+    try:
+        plan = await asyncio.to_thread(fsm.run_current_stage, ctx)
+        for chunk in split_text(plan):
+            await send(chunk)
+        await send(
+            ctx.summary(),
+            parse_mode="Markdown",
+            reply_markup=z13_task_keyboard(ctx.state()),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка z13 планирование: {e}")
+        await send(f"❌ Ошибка на этапе планирования: {e}")
+
+
+async def run_z13_auto_demo(user_id: int, send) -> None:
+    """Прогнать DEMO_TASK через все три этапа автоматически."""
+    fsm = get_z13_fsm()
+    ctx = fsm.create_task(f"demo_{user_id}", DEMO_TASK)
+    z13_sessions[user_id] = ctx
+
+    await send(
+        f"🔄 *Авто-демо Task State Machine*\n\n"
+        f"Задача: _{DEMO_TASK}_\n\n"
+        f"Прогоняем три этапа автоматически...",
+        parse_mode="Markdown",
+    )
+
+    stages = [TaskState.PLANNING, TaskState.EXECUTION, TaskState.VALIDATION]
+    stage_names = {
+        TaskState.PLANNING: "📋 Этап 1/3 — Планирование",
+        TaskState.EXECUTION: "⚙️ Этап 2/3 — Выполнение",
+        TaskState.VALIDATION: "🔍 Этап 3/3 — Валидация",
+    }
+
+    for stage in stages:
+        await send(f"*{stage_names[stage]}*", parse_mode="Markdown")
+        result = await asyncio.to_thread(fsm.run_current_stage, ctx)
+        for chunk in split_text(result):
+            await send(chunk)
+        if stage != TaskState.VALIDATION:
+            fsm.advance(ctx)
+
+    # Итог
+    passed = "✅ ПРИНЯТО" if ctx.validation_passed else "⚠️ ТРЕБУЕТ ДОРАБОТКИ"
+    await send(
+        f"🏁 *Демо завершено*\n\n"
+        f"Валидация: {passed}\n\n"
+        f"{ctx.summary()}\n\n"
+        f"Попробуй сам — введи свою задачу!",
+        parse_mode="Markdown",
+        reply_markup=z13_task_keyboard(TaskState.DONE),
     )
 
 
