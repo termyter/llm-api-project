@@ -2253,21 +2253,52 @@ async def run_z13_auto_demo(user_id: int, send) -> None:
         TaskState.VALIDATION: "🔍 Этап 3/3 — Валидация",
     }
 
+    stage_results: dict[TaskState, str] = {}
+
     for stage in stages:
         await send(f"*{stage_names[stage]}*", parse_mode="Markdown")
         result = await asyncio.to_thread(fsm.run_current_stage, ctx)
+        stage_results[stage] = result
         for chunk in split_text(result):
             await send(chunk)
         if stage != TaskState.VALIDATION:
             fsm.advance(ctx)
 
-    # Итог
+    # ── Аналитические выводы ──────────────────────────────────────────────────
+    plan_text   = stage_results[TaskState.PLANNING]
+    exec_text   = stage_results[TaskState.EXECUTION]
+    valid_text  = stage_results[TaskState.VALIDATION]
+
+    # Считаем шаги в плане (строки вида "1.", "2.", ...)
+    import re
+    plan_steps = len(re.findall(r"^\s*\d+[\.\)]\s", plan_text, re.MULTILINE))
+    plan_words = len(plan_text.split())
+    exec_words = len(exec_text.split())
+    valid_words = len(valid_text.split())
+
     passed = "✅ ПРИНЯТО" if ctx.validation_passed else "⚠️ ТРЕБУЕТ ДОРАБОТКИ"
+
+    conclusions = (
+        "📊 *Анализ работы автомата*\n\n"
+        "*Объём вывода каждого этапа (слов):*\n"
+        f"  📋 Планирование : {'█' * (plan_words  // 80)} {plan_words}\n"
+        f"  ⚙️ Выполнение   : {'█' * (exec_words  // 80)} {exec_words}\n"
+        f"  🔍 Валидация    : {'█' * (valid_words // 80)} {valid_words}\n\n"
+        f"*Структура плана:* {plan_steps} шагов\n"
+        f"*Итог валидации:* {passed}\n\n"
+        "*Что демонстрирует FSM:*\n"
+        "• 📋 Planning получил задачу → составил план _без кода_ (роль: планировщик)\n"
+        "• ⚙️ Execution получил задачу + план → выполнил _по шагам_ (роль: исполнитель)\n"
+        "• 🔍 Validation получил задачу + результат → проверил и обосновал (роль: контролёр)\n\n"
+        "*Ключевой принцип:*\n"
+        "Каждый LLM-вызов имеет узкую роль и обогащённый контекст.\n"
+        "Переходы между этапами — детерминированный код, не LLM.\n"
+        "Это исключает «галлюцинацию перехода» когда LLM сам решает что делать дальше."
+    )
+    await send(conclusions, parse_mode="Markdown")
+
     await send(
-        f"🏁 *Демо завершено*\n\n"
-        f"Валидация: {passed}\n\n"
-        f"{ctx.summary()}\n\n"
-        f"Попробуй сам — введи свою задачу!",
+        f"🏁 *Демо завершено*\n\nПопробуй сам — введи свою задачу!",
         parse_mode="Markdown",
         reply_markup=z13_task_keyboard(TaskState.DONE),
     )
