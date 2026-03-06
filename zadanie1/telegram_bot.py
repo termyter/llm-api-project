@@ -2782,9 +2782,15 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    print("🤖 Бот запущен!")
-    print("💬 Отвечу на твой вопрос за миска риса!")
-    print("Нажмите Ctrl+C для остановки.")
+    print("🤖 Бот запущен!", flush=True)
+    print(flush=True)
+    print("📦 Загруженные модули:", flush=True)
+    print("  ✅ z1–z12  — базовые задания", flush=True)
+    print("  ✅ z13     — Task State Machine (FSM)", flush=True)
+    print("  ✅ z14     — InvariantStateMachine (FSM + инварианты)", flush=True)
+    print(flush=True)
+    print("💬 Отвечу на твой вопрос за миска риса!", flush=True)
+    print("Нажмите Ctrl+C для остановки.", flush=True)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
