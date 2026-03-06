@@ -38,6 +38,10 @@ from zadanie12.day12_profile import (
 from zadanie13.day13_statemachine import (
     TaskStateMachine, TaskContext, DEMO_TASK, TaskState,
 )
+from zadanie14.day14_invariants import (
+    InvariantStateMachine, InvariantTaskContext, InvariantStorage,
+    Invariant, DEMO_INVARIANTS, DEMO_TASK_Z14, DEMO_VIOLATING_TASK,
+)
 
 load_dotenv()
 
@@ -109,6 +113,11 @@ z13_sessions: dict[int, TaskContext] = {}
 z13_mode: set[int] = set()   # ожидаем ввод задачи от пользователя
 _z13_fsm: TaskStateMachine | None = None  # ленивая инициализация
 
+# Задание 14: Инварианты и ограничения состояния
+z14_sessions: dict[int, InvariantTaskContext] = {}
+z14_mode: set[int] = set()   # ожидаем ввод задачи
+_z14_fsm: InvariantStateMachine | None = None
+
 # Режим планировщика (основной бот, вне z13)
 planner_mode: set[int] = set()
 
@@ -118,6 +127,13 @@ def get_z13_fsm() -> TaskStateMachine:
     if _z13_fsm is None:
         _z13_fsm = TaskStateMachine(client=deepseek)
     return _z13_fsm
+
+
+def get_z14_fsm() -> InvariantStateMachine:
+    global _z14_fsm
+    if _z14_fsm is None:
+        _z14_fsm = InvariantStateMachine(client=deepseek)
+    return _z14_fsm
 
 DEFAULT_SETTINGS = {
     "temperature": 0.7,
@@ -178,6 +194,7 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🧠 Задание 11 — Память ассистента (3 слоя)", callback_data="z11")],
         [InlineKeyboardButton("🎭 Задание 12 — Персонализация профилей", callback_data="z12")],
         [InlineKeyboardButton("🔄 Задание 13 — Task State Machine (FSM)", callback_data="z13")],
+        [InlineKeyboardButton("🛡 Задание 14 — Инварианты (FSM + ограничения)", callback_data="z14")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -419,6 +436,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         z13_mode.discard(user_id)
         await update.message.reply_text("⏳ Принято! Запускаю автомат задачи...")
         await start_z13_task(user_id, user_text, update.message.reply_text)
+        return
+
+    # Задание 14: Инварианты — ожидаем задачу
+    if user_id in z14_mode:
+        z14_mode.discard(user_id)
+        await update.message.reply_text("⏳ Принято! Запускаю FSM с инвариантами...")
+        await start_z14_task(user_id, user_text, update.message.reply_text)
         return
 
     # Задание 12: персонализированный агент
@@ -897,6 +921,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(1)
         sys.exit(0)
 
+    # ── Задание 14: Инварианты ────────────────────────────────────────────────
+    if data == "z14":
+        inv_storage = InvariantStorage(str(user_id))
+        active_invs = inv_storage.list_all()
+        if not active_invs:
+            # Загрузить дефолтные
+            for inv in DEMO_INVARIANTS:
+                inv_storage.add(inv)
+            active_invs = DEMO_INVARIANTS
+        inv_list = "\n".join(f"• `{i.name}` — {i.description}" for i in active_invs)
+        await query.edit_message_text(
+            "🛡 *ЗАДАНИЕ 14 — Инварианты и ограничения*\n\n"
+            "FSM из z13 + жёсткие инварианты после каждого этапа.\n\n"
+            "🔍 *Инвариант* — условие, которое НЕЛЬЗЯ нарушать.\n"
+            "После каждого этапа отдельный LLM-чекер проверяет вывод.\n"
+            "Нарушение → откат + перегенерация с объяснением.\n\n"
+            f"*Активные инварианты:*\n{inv_list}\n\n"
+            "Введи задачу — или запусти авто-демо:",
+            parse_mode="Markdown",
+            reply_markup=z14_entry_keyboard(),
+        )
+        z14_mode.add(user_id)
+        return
+
     # ── Задание 13: Task State Machine ───────────────────────────────────────
     if data == "z13":
         await query.edit_message_text(
@@ -1288,6 +1336,157 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "👋 Вышел из Task State Machine.\n\n"
             "Состояние задачи удалено из памяти."
+        )
+        return
+
+    # ── Задание 14 callbacks ─────────────────────────────────────────
+    if data == "t14_advance":
+        ctx = z14_sessions.get(user_id)
+        if not ctx:
+            await query.answer("Задача не найдена!", show_alert=True)
+            return
+        fsm = get_z14_fsm()
+        inv_storage = InvariantStorage(str(user_id))
+        invariants = inv_storage.list_all()
+        new_state = fsm.advance(ctx)
+        if new_state == TaskState.DONE:
+            await query.edit_message_text(
+                f"✅ *Задача завершена (инварианты соблюдены)!*\n\n{ctx.summary()}",
+                parse_mode="Markdown",
+                reply_markup=z14_task_keyboard(new_state, len(ctx.invariant_violations)),
+            )
+            return
+        await query.edit_message_text(f"▶️ Переходим к: {ctx.label()}\n⏳ Запускаю этап с проверкой инвариантов...")
+        result, passed, violation = await asyncio.to_thread(
+            fsm.run_stage_with_invariants, ctx, invariants
+        )
+        if passed:
+            for chunk in split_text(result):
+                await query.message.reply_text(chunk)
+            await query.message.reply_text(
+                f"✅ Инварианты соблюдены\n\n{ctx.summary()}",
+                parse_mode="Markdown",
+                reply_markup=z14_task_keyboard(ctx.state(), len(ctx.invariant_violations)),
+            )
+        else:
+            ctx.record_violation(ctx.current_state, violation or "")
+            for chunk in split_text(result):
+                await query.message.reply_text(chunk)
+            await query.message.reply_text(
+                f"⚠️ *Нарушение инварианта!*\n`{violation}`\n\n"
+                f"Попыток на этом этапе: {ctx.stage_retries(ctx.current_state)}/{fsm.max_retries}",
+                parse_mode="Markdown",
+                reply_markup=z14_task_keyboard(ctx.state(), len(ctx.invariant_violations)),
+            )
+        return
+
+    if data == "t14_retry":
+        ctx = z14_sessions.get(user_id)
+        if not ctx:
+            await query.answer("Задача не найдена!", show_alert=True)
+            return
+        fsm = get_z14_fsm()
+        inv_storage = InvariantStorage(str(user_id))
+        invariants = inv_storage.list_all()
+        retries = ctx.stage_retries(ctx.current_state)
+        if retries >= fsm.max_retries:
+            await query.edit_message_text(
+                f"❌ *Превышен лимит попыток ({fsm.max_retries})*\n\n"
+                "Инвариант продолжает нарушаться. Требуется ручное вмешательство.\n"
+                "Попробуй изменить задачу или инварианты.",
+                parse_mode="Markdown",
+                reply_markup=z14_task_keyboard(TaskState.FAILED, len(ctx.invariant_violations)),
+            )
+            return
+        last_violation = ctx.invariant_violations[-1]["reason"] if ctx.invariant_violations else None
+        await query.edit_message_text(f"🔁 Перегенерация (попытка {retries + 1}/{fsm.max_retries})...")
+        result, passed, violation = await asyncio.to_thread(
+            fsm.run_stage_with_invariants, ctx, invariants, last_violation
+        )
+        if passed:
+            for chunk in split_text(result):
+                await query.message.reply_text(chunk)
+            await query.message.reply_text(
+                f"✅ Инварианты соблюдены после перегенерации!\n\n{ctx.summary()}",
+                parse_mode="Markdown",
+                reply_markup=z14_task_keyboard(ctx.state(), len(ctx.invariant_violations)),
+            )
+        else:
+            ctx.record_violation(ctx.current_state, violation or "")
+            for chunk in split_text(result):
+                await query.message.reply_text(chunk)
+            await query.message.reply_text(
+                f"⚠️ *Нарушение инварианта (попытка {ctx.stage_retries(ctx.current_state)})*\n`{violation}`",
+                parse_mode="Markdown",
+                reply_markup=z14_task_keyboard(ctx.state(), len(ctx.invariant_violations)),
+            )
+        return
+
+    if data == "t14_list_inv":
+        inv_storage = InvariantStorage(str(user_id))
+        invs = inv_storage.list_all()
+        if not invs:
+            text = "📋 Инвариантов нет. Загрузи демо-пресет."
+        else:
+            lines = [f"*{i+1}. [{inv.name}]*\n  {inv.description}\n  _{inv.rule_text}_" for i, inv in enumerate(invs)]
+            text = "📋 *Активные инварианты:*\n\n" + "\n\n".join(lines)
+        ctx = z14_sessions.get(user_id)
+        state = ctx.state() if ctx else TaskState.PLANNING
+        viol_count = len(ctx.invariant_violations) if ctx else 0
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=z14_task_keyboard(state, viol_count))
+        return
+
+    if data == "t14_load_demo_inv":
+        inv_storage = InvariantStorage(str(user_id))
+        for inv in DEMO_INVARIANTS:
+            inv_storage.add(inv)
+        inv_list = "\n".join(f"• `{i.name}` — {i.description}" for i in DEMO_INVARIANTS)
+        ctx = z14_sessions.get(user_id)
+        state = ctx.state() if ctx else TaskState.PLANNING
+        viol_count = len(ctx.invariant_violations) if ctx else 0
+        await query.edit_message_text(
+            f"✅ *Демо-инварианты загружены:*\n{inv_list}",
+            parse_mode="Markdown",
+            reply_markup=z14_task_keyboard(state, viol_count),
+        )
+        return
+
+    if data == "t14_clear_inv":
+        InvariantStorage(str(user_id)).clear()
+        ctx = z14_sessions.get(user_id)
+        state = ctx.state() if ctx else TaskState.PLANNING
+        viol_count = len(ctx.invariant_violations) if ctx else 0
+        await query.edit_message_text(
+            "🗑 Инварианты очищены. Проверка отключена.",
+            reply_markup=z14_task_keyboard(state, viol_count),
+        )
+        return
+
+    if data == "t14_demo":
+        await query.edit_message_text("🎬 Запускаю авто-демо (соблюдение инвариантов)...")
+        await run_z14_auto_demo(user_id, query.message.reply_text, violating=False)
+        return
+
+    if data == "t14_demo_violating":
+        await query.edit_message_text("⚠️ Запускаю демо с нарушающей задачей...")
+        await run_z14_auto_demo(user_id, query.message.reply_text, violating=True)
+        return
+
+    if data == "t14_new":
+        z14_mode.add(user_id)
+        z14_sessions.pop(user_id, None)
+        await query.edit_message_text(
+            "📝 Введи новую задачу (инварианты останутся прежними):",
+            reply_markup=z14_entry_keyboard(),
+        )
+        return
+
+    if data == "t14_exit":
+        z14_mode.discard(user_id)
+        z14_sessions.pop(user_id, None)
+        await query.edit_message_text(
+            "👋 Вышел из режима инвариантов.\n\n"
+            "Инварианты сохранены для следующей сессии."
         )
         return
 
@@ -2343,6 +2542,218 @@ async def run_z13_auto_demo(user_id: int, send) -> None:
         f"🏁 *Демо завершено*\n\nПопробуй сам — введи свою задачу!",
         parse_mode="Markdown",
         reply_markup=z13_task_keyboard(TaskState.DONE),
+    )
+
+
+# ─────────────────────────── ЗАДАНИЕ 14: ИНВАРИАНТЫ ─────────────────
+
+def z14_entry_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура при входе — до запуска задачи."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎬 Авто-демо (без нарушений)", callback_data="t14_demo")],
+        [InlineKeyboardButton("⚠️ Демо нарушения", callback_data="t14_demo_violating")],
+        [InlineKeyboardButton("📋 Список инвариантов", callback_data="t14_list_inv")],
+        [InlineKeyboardButton("🚪 Выйти", callback_data="t14_exit")],
+    ])
+
+
+def z14_task_keyboard(state: TaskState, violation_count: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура во время активной задачи с инвариантами."""
+    viol_label = f" (нарушений: {violation_count})" if violation_count else ""
+    if state == TaskState.PLANNING:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"▶️ Выполнить по плану{viol_label}", callback_data="t14_advance")],
+            [InlineKeyboardButton("🔁 Перегенерировать план", callback_data="t14_retry")],
+            [InlineKeyboardButton("📋 Инварианты", callback_data="t14_list_inv"),
+             InlineKeyboardButton("📝 Новая задача", callback_data="t14_new")],
+            [InlineKeyboardButton("🚪 Выйти", callback_data="t14_exit")],
+        ])
+    elif state == TaskState.EXECUTION:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🔍 Проверить результат{viol_label}", callback_data="t14_advance")],
+            [InlineKeyboardButton("🔁 Перегенерировать", callback_data="t14_retry")],
+            [InlineKeyboardButton("📋 Инварианты", callback_data="t14_list_inv"),
+             InlineKeyboardButton("📝 Новая задача", callback_data="t14_new")],
+            [InlineKeyboardButton("🚪 Выйти", callback_data="t14_exit")],
+        ])
+    elif state == TaskState.VALIDATION:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ Завершить{viol_label}", callback_data="t14_advance")],
+            [InlineKeyboardButton("🔁 Повторить выполнение", callback_data="t14_retry")],
+            [InlineKeyboardButton("📝 Новая задача", callback_data="t14_new")],
+            [InlineKeyboardButton("🚪 Выйти", callback_data="t14_exit")],
+        ])
+    else:  # DONE / FAILED
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📝 Новая задача", callback_data="t14_new")],
+            [InlineKeyboardButton("📋 Инварианты", callback_data="t14_list_inv")],
+            [InlineKeyboardButton("🚪 Выйти", callback_data="t14_exit")],
+        ])
+
+
+async def start_z14_task(user_id: int, task_text: str, send) -> None:
+    """Создать новую задачу и запустить этап планирования с инвариантами."""
+    fsm = get_z14_fsm()
+    inv_storage = InvariantStorage(str(user_id))
+    invariants = inv_storage.list_all()
+
+    ctx = fsm.create_task(str(user_id), task_text)
+    z14_sessions[user_id] = ctx
+
+    inv_summary = (
+        f"🛡 *Активные инварианты ({len(invariants)}):*\n"
+        + "\n".join(f"• `{i.name}` — {i.description}" for i in invariants)
+        if invariants else "⚠️ Инварианты не заданы — проверка отключена."
+    )
+    await send(
+        f"📋 *Этап 1/3 — Планирование (с проверкой инвариантов)*\n\n{inv_summary}",
+        parse_mode="Markdown",
+    )
+
+    try:
+        violation_hint = None
+        while True:
+            output, passed, violation = await asyncio.to_thread(
+                fsm.run_stage_with_invariants, ctx, invariants, violation_hint
+            )
+            if passed:
+                for chunk in split_text(output):
+                    await send(chunk)
+                violation_count = sum(ctx.stage_retry_counts.values())
+                await send(
+                    ctx.summary(),
+                    parse_mode="Markdown",
+                    reply_markup=z14_task_keyboard(ctx.state(), violation_count),
+                )
+                break
+            else:
+                retries = ctx.stage_retries(ctx.current_state)
+                ctx.record_violation(ctx.current_state, violation)
+                z14_sessions[user_id] = ctx
+                if retries >= fsm.max_retries:
+                    await send(
+                        f"❌ *Превышен лимит попыток ({fsm.max_retries})*\n\n"
+                        f"Последнее нарушение:\n`{violation}`\n\n"
+                        f"Требуется вмешательство. Попробуй изменить задачу или инварианты.",
+                        parse_mode="Markdown",
+                        reply_markup=z14_task_keyboard(TaskState.DONE),
+                    )
+                    return
+                await send(
+                    f"🔄 *Нарушение инварианта (попытка {retries + 1}/{fsm.max_retries}):*\n`{violation}`\n\nПерегенерирую...",
+                    parse_mode="Markdown",
+                )
+                violation_hint = violation
+    except Exception as e:
+        logger.error(f"Ошибка z14 планирование: {e}")
+        await send(f"❌ Ошибка на этапе планирования: {e}")
+
+
+async def run_z14_auto_demo(user_id: int, send, violating: bool = False) -> None:
+    """Прогнать задачу через все три этапа с инвариантами автоматически."""
+    import re
+    fsm = get_z14_fsm()
+    inv_storage = InvariantStorage(str(user_id))
+
+    # Убедиться что демо-инварианты загружены
+    invariants = inv_storage.list_all()
+    if not invariants:
+        for inv in DEMO_INVARIANTS:
+            inv_storage.add(inv)
+        invariants = DEMO_INVARIANTS
+
+    task_text = DEMO_VIOLATING_TASK if violating else DEMO_TASK_Z14
+    demo_label = "⚠️ *ДЕМО С НАРУШЕНИЕМ*" if violating else "✅ *ДЕМО БЕЗ НАРУШЕНИЙ*"
+
+    ctx = fsm.create_task(f"demo_{user_id}", task_text)
+    z14_sessions[user_id] = ctx
+
+    inv_list = "\n".join(f"• `{i.name}` — {i.description}" for i in invariants)
+    await send(
+        f"🔄 *Авто-демо FSM + Инварианты*\n{demo_label}\n\n"
+        f"Задача: _{task_text}_\n\n"
+        f"*Инварианты:*\n{inv_list}\n\n"
+        f"Прогоняем три этапа с проверкой после каждого...",
+        parse_mode="Markdown",
+    )
+
+    stages = [TaskState.PLANNING, TaskState.EXECUTION, TaskState.VALIDATION]
+    stage_names = {
+        TaskState.PLANNING:   "📋 Этап 1/3 — Планирование",
+        TaskState.EXECUTION:  "⚙️ Этап 2/3 — Выполнение",
+        TaskState.VALIDATION: "🔍 Этап 3/3 — Валидация",
+    }
+
+    total_violations = 0
+    stage_violation_counts: dict = {}
+
+    for stage in stages:
+        await send(f"*{stage_names[stage]}*", parse_mode="Markdown")
+        violation_hint = None
+        attempt = 0
+        while True:
+            output, passed, violation = await asyncio.to_thread(
+                fsm.run_stage_with_invariants, ctx, invariants, violation_hint
+            )
+            if passed:
+                for chunk in split_text(output):
+                    await send(chunk)
+                await send(f"✅ Инварианты соблюдены (попыток: {attempt + 1})")
+                stage_violation_counts[stage] = attempt
+                if stage != TaskState.VALIDATION:
+                    fsm.advance(ctx)
+                break
+            else:
+                attempt += 1
+                total_violations += 1
+                ctx.record_violation(ctx.current_state, violation)
+                z14_sessions[user_id] = ctx
+                await send(
+                    f"🚫 *Нарушение:* `{violation}`\n⟳ Перегенерирую (попытка {attempt})...",
+                    parse_mode="Markdown",
+                )
+                violation_hint = violation
+                if attempt >= fsm.max_retries:
+                    await send(
+                        f"❌ Достигнут лимит попыток ({fsm.max_retries}) на этапе {stage_names[stage]}.\n"
+                        f"Демо завершено с ошибкой.",
+                        parse_mode="Markdown",
+                    )
+                    return
+
+    # ── Аналитические выводы ──────────────────────────────────────────────────
+    plan_words = len(ctx.plan.split()) if ctx.plan else 0
+    exec_words = len(ctx.execution_result.split()) if ctx.execution_result else 0
+    valid_words = len(ctx.validation_result.split()) if ctx.validation_result else 0
+    plan_steps = len(re.findall(r"^\s*\d+[\.\)]\s", ctx.plan or "", re.MULTILINE))
+    passed_label = "✅ ПРИНЯТО" if ctx.validation_passed else "⚠️ ТРЕБУЕТ ДОРАБОТКИ"
+
+    conclusions = (
+        "📊 *Анализ FSM + Инварианты*\n\n"
+        "*Объём вывода (слов):*\n"
+        f"  📋 Планирование : {'█' * (plan_words  // 80)} {plan_words}\n"
+        f"  ⚙️ Выполнение   : {'█' * (exec_words  // 80)} {exec_words}\n"
+        f"  🔍 Валидация    : {'█' * (valid_words // 80)} {valid_words}\n\n"
+        f"*Структура плана:* {plan_steps} шагов\n"
+        f"*Итог валидации:* {passed_label}\n"
+        f"*Всего нарушений:* {total_violations}\n\n"
+        "*Нарушения по этапам:*\n"
+        + "\n".join(
+            f"  {stage_names[s]}: {n} нарушений"
+            for s, n in stage_violation_counts.items()
+        ) + "\n\n"
+        "*Что демонстрирует Day 14:*\n"
+        "• Инварианты — жёсткие ограничения, не LLM-рекомендации\n"
+        "• Отдельный LLM-чекер (temperature=0) даёт бинарный YES/VIOLATION\n"
+        "• Нарушение → откат на тот же этап + hint в промпте\n"
+        "• max_retries защищает от бесконечных циклов\n"
+        "• FSM переходы детерминированы — только код управляет потоком"
+    )
+    await send(conclusions, parse_mode="Markdown")
+    await send(
+        "🏁 *Демо завершено*\n\nВведи свою задачу или попробуй другое демо!",
+        parse_mode="Markdown",
+        reply_markup=z14_task_keyboard(TaskState.DONE, total_violations),
     )
 
 
