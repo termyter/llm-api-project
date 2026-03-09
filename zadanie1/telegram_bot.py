@@ -42,6 +42,10 @@ from zadanie14.day14_invariants import (
     InvariantStateMachine, InvariantTaskContext, InvariantStorage,
     Invariant, DEMO_INVARIANTS, DEMO_TASK_Z14, DEMO_VIOLATING_TASK,
 )
+from zadanie15.day15_controlled_transitions import (
+    ControlledStateMachine, ControlledTaskContext, TransitionError,
+    DEMO_TASK_Z15, ILLEGAL_DEMO_ATTEMPTS, describe_allowlist,
+)
 
 load_dotenv()
 
@@ -135,6 +139,20 @@ def get_z14_fsm() -> InvariantStateMachine:
         _z14_fsm = InvariantStateMachine(client=deepseek)
     return _z14_fsm
 
+
+# Задание 15: Контролируемые переходы состояний
+z15_sessions: dict[int, ControlledTaskContext] = {}
+z15_mode: set[int] = set()   # ожидаем ввод задачи
+_z15_fsm: ControlledStateMachine | None = None
+
+
+def get_z15_fsm() -> ControlledStateMachine:
+    global _z15_fsm
+    if _z15_fsm is None:
+        _z15_fsm = ControlledStateMachine(client=deepseek)
+    return _z15_fsm
+
+
 DEFAULT_SETTINGS = {
     "temperature": 0.7,
     "model": "deepseek-chat",
@@ -195,6 +213,7 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🎭 Задание 12 — Персонализация профилей", callback_data="z12")],
         [InlineKeyboardButton("🔄 Задание 13 — Task State Machine (FSM)", callback_data="z13")],
         [InlineKeyboardButton("🛡 Задание 14 — Инварианты (FSM + ограничения)", callback_data="z14")],
+        [InlineKeyboardButton("🔒 Задание 15 — Контролируемые переходы (FSM allowlist)", callback_data="z15")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -443,6 +462,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         z14_mode.discard(user_id)
         await update.message.reply_text("⏳ Принято! Запускаю FSM с инвариантами...")
         await start_z14_task(user_id, user_text, update.message.reply_text)
+        return
+
+    # Задание 15: Контролируемые переходы — ожидаем задачу
+    if user_id in z15_mode:
+        z15_mode.discard(user_id)
+        await update.message.reply_text("⏳ Принято! Запускаю controlled FSM (z15)...")
+        await start_z15_task(user_id, user_text, update.message.reply_text)
         return
 
     # Задание 12: персонализированный агент
@@ -943,6 +969,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=z14_entry_keyboard(),
         )
         z14_mode.add(user_id)
+        return
+
+    # ── Задание 15: Контролируемые переходы ──────────────────────────────────
+    if data == "z15":
+        await query.edit_message_text(
+            "🔒 *ЗАДАНИЕ 15 — Контролируемые переходы состояний*\n\n"
+            "ControlledStateMachine = z14 FSM + явный allowlist переходов.\n\n"
+            "Любой переход не из списка → `TransitionError` с объяснением.\n"
+            "История попыток сохраняется в `transition_log`.\n\n"
+            f"{describe_allowlist()}\n\n"
+            "Введи задачу — или запусти авто-демо (включая тест нелегальных переходов):",
+            parse_mode="Markdown",
+            reply_markup=z15_entry_keyboard(),
+        )
+        z15_mode.add(user_id)
         return
 
     # ── Задание 13: Task State Machine ───────────────────────────────────────
@@ -1488,6 +1529,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👋 Вышел из режима инвариантов.\n\n"
             "Инварианты сохранены для следующей сессии."
         )
+        return
+
+    # ── z15 callbacks ─────────────────────────────────────────────────────────
+    if data == "t15_demo":
+        await query.edit_message_text("🎬 Запускаю авто-демо z15 (нормальный поток + тест нелегальных переходов)...")
+        await run_z15_demo(user_id, query.message.reply_text)
+        return
+
+    if data == "t15_new":
+        z15_mode.add(user_id)
+        z15_sessions.pop(user_id, None)
+        await query.edit_message_text(
+            "📝 Введи задачу для z15 (контролируемые переходы):",
+            reply_markup=z15_entry_keyboard(),
+        )
+        return
+
+    if data == "t15_exit":
+        z15_mode.discard(user_id)
+        z15_sessions.pop(user_id, None)
+        await query.edit_message_text("👋 Вышел из режима контролируемых переходов.")
         return
 
     # --- Задания ---
@@ -2757,6 +2819,105 @@ async def run_z14_auto_demo(user_id: int, send, violating: bool = False) -> None
     )
 
 
+# ─── z15: Keyboard helpers ───────────────────────────────────────────────────
+
+def z15_entry_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎬 Авто-демо (норм. поток + нелег. переходы)", callback_data="t15_demo")],
+        [InlineKeyboardButton("✏️ Своя задача", callback_data="t15_new")],
+        [InlineKeyboardButton("🏠 Выход", callback_data="t15_exit")],
+    ])
+
+
+def z15_task_keyboard(state: str, illegal_count: int = 0) -> InlineKeyboardMarkup:
+    buttons = []
+    if state not in (TaskState.DONE, TaskState.FAILED):
+        buttons.append([InlineKeyboardButton("▶️ Следующий этап", callback_data="t15_advance")])
+        buttons.append([InlineKeyboardButton("⏸️ Пауза", callback_data="t15_pause")])
+    if illegal_count:
+        buttons.append([InlineKeyboardButton(f"⚠️ Лог нарушений ({illegal_count})", callback_data="t15_log")])
+    buttons.append([InlineKeyboardButton("✏️ Новая задача", callback_data="t15_new")])
+    buttons.append([InlineKeyboardButton("🏠 Выход", callback_data="t15_exit")])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def start_z15_task(user_id: int, task_text: str, send) -> None:
+    fsm = get_z15_fsm()
+    ctx = fsm.create_task(str(user_id), task_text)
+    z15_sessions[user_id] = ctx
+    z15_mode.discard(user_id)
+
+    await send(
+        f"🔒 *Задача создана (z15 — контролируемые переходы)*\n\n"
+        f"📌 {task_text[:100]}{'...' if len(task_text) > 100 else ''}\n\n"
+        f"▶️ Состояние: `{ctx.state().value.upper()}`\n\n"
+        f"FSM будет блокировать любой нелегальный переход.\n"
+        f"Используй кнопки для управления:",
+        parse_mode="Markdown",
+        reply_markup=z15_task_keyboard(ctx.state().value),
+    )
+
+
+async def run_z15_demo(user_id: int, send) -> None:
+    fsm = get_z15_fsm()
+    ctx = fsm.create_task(str(user_id) + "_demo", DEMO_TASK_Z15)
+    z15_sessions[user_id] = ctx
+
+    await send(
+        "🔒 *ДЕМО — Day 15: Контролируемые переходы*\n\n"
+        f"Задача: _{DEMO_TASK_Z15}_\n\n"
+        "**Шаг 1:** Тестируем нелегальные переходы из `PLANNING`",
+        parse_mode="Markdown",
+    )
+
+    # Тест нелегальных переходов
+    total_blocked = 0
+    for from_s, to_s, desc in ILLEGAL_DEMO_ATTEMPTS:
+        if ctx.state().value == from_s.value:
+            result = fsm.try_illegal_transition(ctx, to_s)
+            total_blocked += 1
+            await send(
+                f"🚫 *{desc}*\n\n`{from_s.value.upper()} → {to_s.value.upper()}`\n\n{result}",
+                parse_mode="Markdown",
+            )
+
+    await send(
+        f"✅ Заблокировано нелегальных переходов: *{total_blocked}*\n\n"
+        "Теперь запускаем нормальный поток: PLANNING → EXECUTION → VALIDATION → DONE",
+        parse_mode="Markdown",
+    )
+
+    # Нормальный поток
+    stages = [
+        (TaskState.PLANNING,   "📋 Этап 1/3 — Планирование"),
+        (TaskState.EXECUTION,  "⚙️ Этап 2/3 — Выполнение"),
+        (TaskState.VALIDATION, "🔍 Этап 3/3 — Валидация"),
+    ]
+
+    for target_state, label in stages:
+        if ctx.state() != target_state:
+            continue
+        await send(f"*{label}*...", parse_mode="Markdown")
+        output = fsm.run_current_stage(ctx)
+        await send(output[:1500] + ("..." if len(output) > 1500 else ""))
+        try:
+            fsm.advance(ctx)
+        except TransitionError as e:
+            await send(f"❌ Неожиданная ошибка перехода: {e}", parse_mode="Markdown")
+            break
+
+    illegal_log = ctx.illegal_attempts()
+    summary = (
+        f"🏁 *Демо завершено*\n\n"
+        f"✅ Финальное состояние: `{ctx.state().value.upper()}`\n"
+        f"🚫 Заблокировано нелегальных попыток: *{len(illegal_log)}*\n"
+        f"📋 Переходов записано: *{len(ctx.transition_log)}*\n\n"
+        "Нелегальные переходы логируются, но *не изменяют состояние*.\n"
+        "Это и есть гарантия controlled state machine."
+    )
+    await send(summary, parse_mode="Markdown", reply_markup=z15_entry_keyboard())
+
+
 # ─────────────────────────── ЗАПУСК ────────────────────────────────
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2788,6 +2949,7 @@ def main():
     print("  ✅ z1–z12  — базовые задания", flush=True)
     print("  ✅ z13     — Task State Machine (FSM)", flush=True)
     print("  ✅ z14     — InvariantStateMachine (FSM + инварианты)", flush=True)
+    print("  ✅ z15     — ControlledStateMachine (FSM + allowlist переходов)", flush=True)
     print(flush=True)
     print("💬 Отвечу на твой вопрос за миска риса!", flush=True)
     print("Нажмите Ctrl+C для остановки.", flush=True)
