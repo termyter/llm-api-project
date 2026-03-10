@@ -18,6 +18,14 @@
 ## 🔄 In Progress
 - nothing
 
+## ✅ Validation Report [2026-03-10]
+- ✅ core/llm.py — импорт OK, load_config / get_current_model / list_models работают
+- ✅ core/memory.py — SQLite: init_db / save_message / get_history / clear_session / list_sessions работают
+- ✅ core/tools.py — register / get_all / get_for_litellm / call_tool работают
+- ✅ core/agent.py — run / run_simple / new_session импортируются, new_session() генерирует корректный ID
+- ⚠️  LLM API тест — пропущен (ключ в .env устарел; нужен свежий ANTHROPIC_API_KEY или OPENAI_API_KEY)
+- ✅ myai/test_core.py — тестовый скрипт создан (python -m myai.test_core)
+
 ## 📋 Pending
 
 ### Phase 1 — Foundation ✅ ЗАВЕРШЕНА
