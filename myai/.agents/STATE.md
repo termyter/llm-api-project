@@ -1,8 +1,8 @@
 # 🧠 Project State
 > Этот файл читают все агенты при старте. Обновляй после каждой сессии.
 
-**Last updated:** 2026-03-09
-**Current phase:** `foundation`
+**Last updated:** 2026-03-09 (agent.py added — Phase 1 завершена)
+**Current phase:** `phase2-interfaces`
 **Active branch:** `day15-controlled-transitions`
 
 ---
@@ -10,17 +10,21 @@
 ## ✅ Completed
 - [x] Создана структура папок `myai/`
 - [x] Создан `.agents/` с файлами задач
+- [x] `core/memory.py` — история диалогов, SQLite через aiosqlite
+- [x] `core/llm.py` — async chat(), list_models(), get_current_model(), load_config()
+- [x] `core/tools.py` — реестр инструментов, @tool декоратор, load_mcp_tools(), get_for_litellm(), call_tool()
+- [x] `core/agent.py` — агентный цикл, tool calling loop (до 5 итераций), run(), run_simple(), new_session()
 
 ## 🔄 In Progress
 - nothing
 
 ## 📋 Pending
 
-### Phase 1 — Foundation
-- [ ] `core/llm.py` — LiteLLM, поддержка любой модели
-- [ ] `core/memory.py` — история, SQLite
-- [ ] `core/agent.py` — агентный цикл, tool calling
-- [ ] `core/tools.py` — реестр MCP инструментов
+### Phase 1 — Foundation ✅ ЗАВЕРШЕНА
+- [x] `core/llm.py` — LiteLLM, поддержка любой модели
+- [x] `core/memory.py` — история, SQLite
+- [x] `core/agent.py` — агентный цикл, tool calling
+- [x] `core/tools.py` — реестр MCP инструментов
 
 ### Phase 2 — Interfaces
 - [ ] `interfaces/cli/` — терминальный интерфейс (Rich)
