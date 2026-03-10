@@ -46,6 +46,7 @@ from zadanie15.day15_controlled_transitions import (
     ControlledStateMachine, ControlledTaskContext, TransitionError,
     DEMO_TASK_Z15, ILLEGAL_DEMO_ATTEMPTS, describe_allowlist,
 )
+from zadanie16.day16_mcp_client import connect_and_list_tools, format_for_telegram
 
 load_dotenv()
 
@@ -214,6 +215,7 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🔄 Задание 13 — Task State Machine (FSM)", callback_data="z13")],
         [InlineKeyboardButton("🛡 Задание 14 — Инварианты (FSM + ограничения)", callback_data="z14")],
         [InlineKeyboardButton("🔒 Задание 15 — Контролируемые переходы (FSM allowlist)", callback_data="z15")],
+        [InlineKeyboardButton("🔌 Задание 16 — MCP подключение (список инструментов)", callback_data="z16")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -986,6 +988,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         z15_mode.add(user_id)
         return
 
+    # ── Задание 16: MCP подключение ───────────────────────────────────────────
+    if data == "z16":
+        await query.edit_message_text(
+            "🔌 *ЗАДАНИЕ 16 — MCP подключение*\n\n"
+            "MCP (Model Context Protocol) — открытый протокол Anthropic\n"
+            "для подключения LLM к внешним инструментам и сервисам.\n\n"
+            "Именно на MCP работают: Claude Code, Cursor, Roo Code и другие\n"
+            "AI-ассистенты — они читают описания инструментов и знают,\n"
+            "как их вызывать, без дополнительного кода.\n\n"
+            "🖥️ *Наш демо-сервер* предоставляет 5 инструментов:\n"
+            "`check_transition` · `fetch_url` · `get_course_progress`\n"
+            "`list_course_modules` · `ping`\n\n"
+            "Нажми *Подключиться* — клиент запустит сервер через stdio\n"
+            "и получит список доступных инструментов:",
+            parse_mode="Markdown",
+            reply_markup=z16_entry_keyboard(),
+        )
+        return
+
     # ── Задание 13: Task State Machine ───────────────────────────────────────
     if data == "z13":
         await query.edit_message_text(
@@ -1550,6 +1571,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         z15_mode.discard(user_id)
         z15_sessions.pop(user_id, None)
         await query.edit_message_text("👋 Вышел из режима контролируемых переходов.")
+        return
+
+    # ── z16 callbacks ─────────────────────────────────────────────────────────
+    if data == "t16_connect":
+        await query.edit_message_text("⏳ Устанавливаю соединение с MCP-сервером...")
+        await run_z16_demo(query.message.reply_text)
+        return
+
+    if data == "t16_exit":
+        await query.edit_message_text("👋 Вышел из режима MCP.")
         return
 
     # --- Задания ---
@@ -2918,6 +2949,28 @@ async def run_z15_demo(user_id: int, send) -> None:
     await send(summary, parse_mode="Markdown", reply_markup=z15_entry_keyboard())
 
 
+# ─── z16: MCP подключение ────────────────────────────────────────────────────
+
+def z16_entry_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔌 Подключиться и получить список инструментов", callback_data="t16_connect")],
+        [InlineKeyboardButton("🏠 Выход", callback_data="t16_exit")],
+    ])
+
+
+async def run_z16_demo(send) -> None:
+    try:
+        data = await connect_and_list_tools()
+        text = format_for_telegram(data)
+        await send(text, parse_mode="Markdown", reply_markup=z16_entry_keyboard())
+    except Exception as e:
+        await send(
+            f"❌ Ошибка подключения к MCP-серверу:\n`{e}`",
+            parse_mode="Markdown",
+            reply_markup=z16_entry_keyboard(),
+        )
+
+
 # ─────────────────────────── ЗАПУСК ────────────────────────────────
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2950,6 +3003,7 @@ def main():
     print("  ✅ z13     — Task State Machine (FSM)", flush=True)
     print("  ✅ z14     — InvariantStateMachine (FSM + инварианты)", flush=True)
     print("  ✅ z15     — ControlledStateMachine (FSM + allowlist переходов)", flush=True)
+    print("  ✅ z16     — MCP подключение (FastMCP сервер + stdio клиент)", flush=True)
     print(flush=True)
     print("💬 Отвечу на твой вопрос за миска риса!", flush=True)
     print("Нажмите Ctrl+C для остановки.", flush=True)
