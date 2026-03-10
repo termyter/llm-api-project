@@ -1,0 +1,23 @@
+# myai Configuration
+# Измени model на любую поддерживаемую LiteLLM моделью
+
+llm:
+  model: "claude-3-5-sonnet-20241022"   # или "gpt-4o", "gemini/gemini-pro", "ollama/llama3"
+  max_tokens: 4096
+  temperature: 0.7
+
+memory:
+  db_path: "myai/data/memory.db"
+  history_limit: 20                      # сколько сообщений помнить в контексте
+
+telegram:
+  # token берётся из .env: TELEGRAM_BOT_TOKEN
+  enabled: true
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  enabled: false                         # включить когда понадобится Flutter
+
+mcp:
+  server_path: "zadanie16/day16_mcp_server.py"  # существующий сервер
