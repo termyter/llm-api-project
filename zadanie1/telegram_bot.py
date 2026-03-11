@@ -47,6 +47,8 @@ from zadanie15.day15_controlled_transitions import (
     DEMO_TASK_Z15, ILLEGAL_DEMO_ATTEMPTS, describe_allowlist,
 )
 from zadanie16.day16_mcp_client import connect_and_list_tools, format_for_telegram
+from zadanie17.day17_agent import analyze_repo as z17_analyze_repo, format_telegram as z17_format_telegram
+from zadanie18.day18_agent import get_weather_report as z18_get_weather_report, format_report as z18_format_report
 
 load_dotenv()
 
@@ -216,6 +218,7 @@ def zadanie_keyboard():
         [InlineKeyboardButton("🛡 Задание 14 — Инварианты (FSM + ограничения)", callback_data="z14")],
         [InlineKeyboardButton("🔒 Задание 15 — Контролируемые переходы (FSM allowlist)", callback_data="z15")],
         [InlineKeyboardButton("🔌 Задание 16 — MCP подключение (список инструментов)", callback_data="z16")],
+        [InlineKeyboardButton("🤖 Задание 17 — MCP агент (GitHub + погода)", callback_data="z17")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -1007,6 +1010,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Задание 17: MCP агент (GitHub + погода) ──────────────────────────────
+    if data == "z17":
+        await query.edit_message_text(
+            "🤖 *ЗАДАНИЕ 17 — MCP агент*\n\n"
+            "Агент подключается к MCP-серверу через stdio transport\n"
+            "и реально вызывает инструменты — в отличие от z16 (только список).\n\n"
+            "🐙 *GitHub MCP сервер* — 3 инструмента:\n"
+            "`get_repo_info` · `get_latest_commits` · `list_open_issues`\n\n"
+            "🌤 *Weather MCP сервер* (Open-Meteo) — 3 инструмента:\n"
+            "`get_current_weather` · `get_forecast` · `get_weather_by_coords`\n\n"
+            "Выбери что запустить:",
+            parse_mode="Markdown",
+            reply_markup=z17_entry_keyboard(),
+        )
+        return
+
     # ── Задание 13: Task State Machine ───────────────────────────────────────
     if data == "z13":
         await query.edit_message_text(
@@ -1581,6 +1600,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "t16_exit":
         await query.edit_message_text("👋 Вышел из режима MCP.")
+        return
+
+    # ── z17 callbacks ─────────────────────────────────────────────────────────
+    if data == "t17_analyze":
+        await query.edit_message_text("⏳ Подключаюсь к GitHub MCP-серверу и анализирую репозиторий...")
+        await run_z17_github_demo(query.message.reply_text)
+        return
+
+    if data == "t17_weather":
+        await query.edit_message_text("⏳ Подключаюсь к Weather MCP-серверу и запрашиваю погоду...")
+        await run_z17_weather_demo(query.message.reply_text)
+        return
+
+    if data == "t17_exit":
+        await query.edit_message_text("👋 Вышел из режима MCP агента.")
         return
 
     # --- Задания ---
@@ -2971,6 +3005,57 @@ async def run_z16_demo(send) -> None:
         )
 
 
+# ─── z17: MCP агент (GitHub API) ─────────────────────────────────────────────
+
+def z17_entry_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🐙 GitHub — анализ репозитория", callback_data="t17_analyze")],
+        [InlineKeyboardButton("🌤 Погода — Москва / СПб / Париж", callback_data="t17_weather")],
+        [InlineKeyboardButton("🏠 Выход", callback_data="t17_exit")],
+    ])
+
+
+async def run_z17_github_demo(send) -> None:
+    try:
+        data = await z17_analyze_repo("termyter", "llm-api-project")
+        text = z17_format_telegram(data)
+        try:
+            await send(text, parse_mode="Markdown", reply_markup=z17_entry_keyboard())
+        except Exception:
+            await send(text, reply_markup=z17_entry_keyboard())
+    except Exception as e:
+        await send(
+            f"❌ Ошибка GitHub MCP агента:\n{e}",
+            reply_markup=z17_entry_keyboard(),
+        )
+
+
+async def run_z17_weather_demo(send) -> None:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    import sys
+    from pathlib import Path
+
+    server_path = Path(__file__).parent.parent / "zadanie18" / "day18_mcp_server.py"
+    server_params = StdioServerParameters(
+        command=sys.executable,
+        args=[str(server_path)],
+    )
+    try:
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                data = await z18_get_weather_report(session)
+        text = z18_format_report(data)
+        await send(text, parse_mode="Markdown", reply_markup=z17_entry_keyboard())
+    except Exception as e:
+        await send(
+            f"❌ Ошибка Weather MCP агента:\n`{e}`",
+            parse_mode="Markdown",
+            reply_markup=z17_entry_keyboard(),
+        )
+
+
 # ─────────────────────────── ЗАПУСК ────────────────────────────────
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3004,6 +3089,8 @@ def main():
     print("  ✅ z14     — InvariantStateMachine (FSM + инварианты)", flush=True)
     print("  ✅ z15     — ControlledStateMachine (FSM + allowlist переходов)", flush=True)
     print("  ✅ z16     — MCP подключение (FastMCP сервер + stdio клиент)", flush=True)
+    print("  ✅ z17     — MCP агент: вызов инструментов (GitHub API)", flush=True)
+    print("  ✅ z18     — MCP агент: погода Open-Meteo (get_current / forecast / coords)", flush=True)
     print(flush=True)
     print("💬 Отвечу на твой вопрос за миска риса!", flush=True)
     print("Нажмите Ctrl+C для остановки.", flush=True)
